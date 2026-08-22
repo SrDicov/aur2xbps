@@ -26,7 +26,7 @@ jobs:
         run: |
           pip install pytest pytest-timeout httpx pyyaml
           mkdir -p "$AUR2XBPS_ROOT/cache/aur-rpc" "$AUR2XBPS_ROOT/sources"
-          pytest tests/ -q --timeout=120 -m "not network"
+          python3 -m pytest tests/ -q --timeout=120 -m "not network"
       - uses: cachix/install-nix-action@v27
         with:
           extra_nix_config: |
@@ -47,22 +47,20 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+      - name: Clave RSA efímera del runner (sin secretos)
+        run: |
+          mkdir -p "$AUR2XBPS_ROOT/keys"
+          openssl genrsa -out "$AUR2XBPS_ROOT/keys/privkey.pem" 4096
+          chmod 600 "$AUR2XBPS_ROOT/keys/privkey.pem"
+          echo "clave efímera generada"
       - name: TRH 3 builds hash compare (hello, sandbox)
         run: |
-          # Clave RSA efímera generada en el runner — nunca se usa una privada real.
-          mkdir -p "$AUR2XBPS_ROOT/keys"
-          python3 - <<'PY'
-          import os, subprocess
-          from pathlib import Path
-          from src.xbps.signing import generate_keypair
-          keydir = Path(os.environ.get("AUR2XBPS_ROOT", "/tmp")) / "aur2xbps-keys"
-          generate_keypair(keydir / "privkey.pem")
-          print("clave efímera:", keydir / "privkey.pem")
-          PY
+          PIN=github:NixOS/nixpkgs/nixos-24.11
           for i in 1 2 3; do
-            nix build .#packages.x86_64-linux.hello --option sandbox true
-            sha256sum result/bin/hello | awk '{print $1}'
-          done | sort -u | tee /tmp/trh-hashes.txt
+            out=$(nix build --no-link --print-out-paths               "$PIN#hello" --option sandbox true)
+            sha256sum "$out/bin/hello" | awk '{print $1}'
+          done | sort -u > /tmp/trh-hashes.txt
+          cat /tmp/trh-hashes.txt
           test "$(wc -l < /tmp/trh-hashes.txt)" = "1" && echo "TRH OK: hashes idénticos"
 
   tiar:
