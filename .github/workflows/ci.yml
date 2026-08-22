@@ -5,14 +5,16 @@ on:
     branches: [master, main]
   pull_request:
 
-env:
-  AUR2XBPS_ROOT: ${{ runner.temp }}/aur2xbps-workspace
-  # Paquetes usados por los jobs (sobrescribibles vía repository variables)
-  TRH_PACKAGES: ${{ vars.TRH_PACKAGES || 'hello' }}
+# NOTA: env a nivel workflow solo acepta contextos github/vars/secrets;
+# runner.* NO está disponible ahí (rompe el parseo completo del workflow).
+# Cada job define su workspace temporal en pasos concretos.
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    env:
+      AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
+      TRH_PACKAGES: ${{ vars.TRH_PACKAGES || 'hello' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +39,8 @@ jobs:
 
   trh:
     runs-on: ubuntu-latest
+    env:
+      AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v27
@@ -51,7 +55,7 @@ jobs:
           import os, subprocess
           from pathlib import Path
           from src.xbps.signing import generate_keypair
-          keydir = Path(os.environ["AUR2XBPS_ROOT"]) / "keys"
+          keydir = Path(os.environ.get("AUR2XBPS_ROOT", "/tmp")) / "aur2xbps-keys"
           generate_keypair(keydir / "privkey.pem")
           print("clave efímera:", keydir / "privkey.pem")
           PY
