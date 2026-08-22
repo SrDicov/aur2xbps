@@ -11,7 +11,9 @@ from typing import Dict, Optional
 from src.common.paths import REPO_ROOT, SHLIBS as _WS_SHLIBS, SHLIBS_SUBMODULE
 
 DEFAULT_SHLIBS = _WS_SHLIBS
-REPO_SHLIBS = SHLIBS_SUBMODULE  # submódulo git del repo
+# submódulo git dentro del propio checkout (common/void-packages/common/shlibs):
+SHLIBS_SUBMODULE_REAL = REPO_ROOT / "common" / "void-packages" / "common" / "shlibs"
+REPO_SHLIBS = SHLIBS_SUBMODULE
 FALLBACK = Path(__file__).parent / "shlibs.fallback"  # opcional
 
 class ShlibsDB:
@@ -21,7 +23,7 @@ class ShlibsDB:
         self._load()
 
     def _resolve(self) -> Path:
-        for cand in [DEFAULT_SHLIBS, REPO_SHLIBS, FALLBACK]:
+        for cand in [SHLIBS_SUBMODULE_REAL, DEFAULT_SHLIBS, REPO_SHLIBS, FALLBACK]:
             if cand.exists():
                 return cand
         # Si nada existe, crear vacío
