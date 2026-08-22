@@ -259,7 +259,20 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
                 f"{len(urls)} distfiles vs {len(checksums)} checksums: revisar antes de compilar")
 
         depends = map_deps(pkg.depends_for())
-        makedepends = map_deps(pkg.makedepends_for())
+        mapped_makedepends = map_deps(pkg.makedepends_for())
+        # En el chroot xbps-src solo se instalan hostmakedepends/makedepends
+        # ANTES de compilar: los headers (*-devel) son dependencia de build.
+        # Las libs compartidas runtime las añade xbps automáticamente vía
+        # common/shlibs al crear el paquete, así que depends queda limpio.
+        make_libs = [d for d in dict.fromkeys(mapped_makedepends + depends)
+                     if d.endswith("-devel")]
+        make_tools = [d for d in mapped_makedepends if not d.endswith("-devel")]
+        depends = [d for d in depends if not d.endswith("-devel")]
+        if make_libs and "pkg-config" not in make_tools:
+            # Los builds que enlazan librerías invocan pkg-config para obtener
+            # flags/libs; sin él los Makefiles caen a LDLIBS hardcodeados estilo
+            # Debian (-ltinfo) que no existen en Void (tinfo va en libncursesw).
+            make_tools.append("pkg-config")
 
         lines: list[str] = []
         lines.append(f"# Template file for '{pname}'")
@@ -277,8 +290,10 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
         # NOTA: no emitir 'archs=noarch' — xbps-src lo trata como restricción
         # y falla ("cannot be built for x86_64"); los paquetes arch-independientes
         # simplemente no restringen archs.
-        if makedepends:
-            lines.append(f'hostmakedepends="{" ".join(makedepends)}"')
+        if make_tools:
+            lines.append(f'hostmakedepends="{" ".join(make_tools)}"')
+        if make_libs:
+            lines.append(f'makedepends="{" ".join(make_libs)}"')
         if depends:
             lines.append(f'depends="{" ".join(depends)}"')
         lines.append(f'short_desc="{_clean(pkg.pkgdesc, pname)}"')

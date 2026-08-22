@@ -39,13 +39,15 @@ PRIV=""
 # --------------------------------------------------------------- 3. dependencias
 # Sincronizar repodata con fallback de mirror: la imagen/instalación vieja
 # puede apuntar a alpha.de (cert SSL inválido) → cambiar a repo-default.
+# -y SIEMPRE: sin tty, xbps-install pregunta "continue?" y con EOF aborta
+# devolviendo exit 0 (falso éxito silencioso).
 xbps_sync() {
-    $PRIV xbps-install -S "$@" >/dev/null 2>&1 && return 0
+    $PRIV xbps-install -Sy "$@" >/dev/null 2>&1 && return 0
     warn "sincronización de repos falló; probando mirror repo-default.voidlinux.org…"
     mkdir -p /etc/xbps.d
     printf 'repository=https://repo-default.voidlinux.org/current\n' \
         > /etc/xbps.d/00-repository-main.conf
-    $PRIV xbps-install -S "$@"
+    $PRIV xbps-install -Sy "$@"
 }
 
 # Actualizar el propio xbps primero (imágenes antiguas tienen bugs de TLS)
@@ -89,8 +91,10 @@ CACHE_DIR="${AUR2XBPS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/aur2xbps}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/aur2xbps"
 KEYS_DIR="${AUR2XBPS_KEYS_DIR:-$CONFIG_DIR/keys}"
 
-mkdir -p "$DATA_DIR"/{sources,derivations,srcpkgs,fake-root} \
-         "$DATA_DIR/void" "$CACHE_DIR/aur-rpc" "$CONFIG_DIR" "$KEYS_DIR"
+# POSIX sh (dash) no soporta expansión de llaves {a,b}: listar rutas completas
+mkdir -p "$DATA_DIR/sources" "$DATA_DIR/derivations" "$DATA_DIR/srcpkgs" \
+         "$DATA_DIR/fake-root" "$DATA_DIR/void" \
+         "$CACHE_DIR/aur-rpc" "$CONFIG_DIR" "$KEYS_DIR"
 chmod 700 "$KEYS_DIR"
 ok "estructura creada en $DATA_DIR"
 
@@ -103,7 +107,16 @@ fi
 
 # masterdir bootstrap si falta y xbps-src disponible
 # (xbps-src rechaza root salvo XBPS_ALLOW_CHROOT_BREAKOUT=1 — caso contenedor/CI)
-if [ ! -d "$DATA_DIR/void/masterdir/etc" ] && [ -x "$VP/xbps-src" ]; then
+# xbps-src moderno nombra el masterdir por arquitectura: masterdir[-$ARCH]
+ARCH="$(uname -m)"
+find_masterdir() {
+    for m in "$VP/masterdir-$ARCH" "$VP/masterdir"; do
+        [ -d "$m/etc" ] && { printf '%s\n' "$m"; return 0; }
+    done
+    return 1
+}
+MASTERDIR_REAL=""
+if ! find_masterdir >/dev/null && [ ! -d "$DATA_DIR/void/masterdir/etc" ] && [ -x "$VP/xbps-src" ]; then
     echo "bootstrap del masterdir (puede tardar)…"
     if [ "$(id -u)" = "0" ]; then
         (cd "$VP" && XBPS_ALLOW_CHROOT_BREAKOUT=1 ./xbps-src binary-bootstrap) || \
@@ -112,6 +125,10 @@ if [ ! -d "$DATA_DIR/void/masterdir/etc" ] && [ -x "$VP/xbps-src" ]; then
         (cd "$VP" && ./xbps-src binary-bootstrap) || \
             warn "binary-bootstrap falló; ejecútalo a mano después"
     fi
+fi
+if MASTERDIR_REAL="$(find_masterdir)"; then
+    # compat: exponer también $DATA_DIR/void/masterdir como symlink al real
+    [ -e "$DATA_DIR/void/masterdir" ] || ln -s "$MASTERDIR_REAL" "$DATA_DIR/void/masterdir"
 fi
 
 # --------------------------------------------------------------- 6. claves RSA
@@ -212,7 +229,7 @@ fi
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/aur2xbps" <<EOF
 #!/bin/sh
-export PYTHONPATH="$PWD\${PYTHONPATH:+:\$PYTHONPATH}"
+export PYTHONPATH="$SCRIPT_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 -m src.cli "\$@"
 EOF
 chmod +x "$BIN_DIR/aur2xbps"
