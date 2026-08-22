@@ -8,7 +8,7 @@ Bridge AUR (Arch) → Void Linux (XBPS) usando Nix como motor hermético. Pipeli
 ## Configuración de entorno
 - **Workspace** (cachés, fuentes, derivaciones, repo): variable `AUR2XBPS_ROOT` (default `~/.local/share/aur2xbps`; alternativamente archivo `~/.config/aur2xbps/root` con la ruta). Resolución centralizada en `src/common/paths.py` — NUNCA hardcodear rutas absolutas personales.
 - **Claves de firma**: FUERA del árbol, en `AUR2XBPS_KEYDIR` (default `/etc/xbps/keys/aur2xbps`). Nunca commitear `.pem`/`.key`/`.sig2`.
-- **Requisitos**: Python ≥3.11, Nix ≥2.35 (flakes + sandbox), xbps estáticos, patchelf, void-packages bootstrapeado (submódulo `common/void-packages`, shlibs 4614+ entradas).
+- **Requisitos**: Python ≥3.11, Nix ≥2.35 (flakes + sandbox), xbps estáticos, patchelf, void-packages bootstrapeado (submódulo `common/void-packages`; fuente de `common/shlibs`). Guía operativa: `docs/USAGE.md`.
 
 ## Código — entrypoints
 - `src/common/config.py` — configuración central (env AUR2XBPS_* > ~/.config/aur2xbps/config.toml > /etc/aur2xbps/config.toml > defaults XDG). Claves: data_dir/cache_dir/repo_dir/keys_dir/masterdir/void_packages_dir/host/port/arch/python_version/signing_key/log_level/restricted_mode/offline. `dynamic_linker()`/`nix_system()` para multi-arch.
@@ -34,11 +34,13 @@ Bridge AUR (Arch) → Void Linux (XBPS) usando Nix como motor hermético. Pipeli
 pytest tests/ -q --timeout=120          # suite completa
 ./scripts/ci-local.sh                   # CI local completo (~4 min)
 ./scripts/ci-local.sh --notify          # con notificación de fallos
-SMOKE_TARGET=bun-bin ./scripts/ci-local.sh
+SMOKE_TARGET=<pkg-bin> ./scripts/ci-local.sh   # activa smoke chroot (sin env se omite)
+python3 -m src.nix.patchelf             # linter de flakes generados (standalone)
 ```
+- Imports SIEMPRE como `from src.…`: el `conftest.py` en la raíz inserta el repo en `sys.path`. Si corres pytest desde otro directorio, rompe.
 - Tests marcados `@pytest.mark.network` acceden a AUR real; el resto no usa red. En CI público se ejecutan con `-m "not network"`.
 - Fixtures: `tests/fixtures/srcinfo/` (56 `.SRCINFO` reales + maliciosos sintéticos), `tests/fixtures/flakes/`.
-- CI GitHub `.github/workflows/ci.yml`: jobs lint/trh/tiar, sin secretos (clave efímera en runtime, workspace en `runner.temp`).
+- CI GitHub `.github/workflows/ci.yml`: jobs lint/trh/tiar, sin secretos (clave RSA efímera generada en runtime; workspace en `/tmp` del runner).
 
 ## KPIs
 | KPI | Verificación | Umbral |
@@ -49,6 +51,10 @@ SMOKE_TARGET=bun-bin ./scripts/ci-local.sh
 | TIAR | canary curl en sandbox Nix | 0 bytes egress (exit 6 DNS) |
 
 ## Gotchas críticos
+- **dash = /bin/sh en Void**: POSIX estricto, SIN expansión de llaves `{a,b}` ni bashismos en scripts con shebang `#!/bin/sh`.
+- **xbps-install sin `-y`**: con stdin en EOF imprime `Aborting!` y retorna exit 0 → éxito falso. Siempre `-Sy`.
+- **Headers `-devel` son build-time**: en el chroot solo se instalan hostmakedepends/makedepends antes de compilar; las libs runtime las resuelve xbps vía shlibs. Nunca emitir `-devel` en `depends=`.
+- **pkg-config obligatorio al enlazar libs**: sin él los Makefiles caen a LDLIBS estilo Debian (`-ltinfo`) inexistentes en Void (tinfo va fusionado en libncursesw).
 - **patchelf orden mandatorio**: rpath primero, interpreter después, invocaciones separadas. Combinados → ELF corrupto. Linter falla si detecta ambos en misma línea. `chmod +w` antes/después (Nix store read-only).
 - **patchelf sobre binarios Go es destructivo**: saltarse ELFs que ya no referencian /nix/store (check readelf antes de parchear).
 - **strip de stdenv corrompe binarios Go/precompilados**: `dontStrip = true` en template BIN; **autoPatchelfHook corrompe binarios Go** — no usarlo.
@@ -107,3 +113,6 @@ Void usa runit. El instalador crea `/etc/runit/runsvdir/default/aur2xbps-repo/ru
 - `build_python_in_void()` requiere deps build instaladas en el masterdir Void.
 - Cross-compile ARM (boringssl-git) desde host x86_64 único: no soportado.
 - Repology API restringe bots: oráculo offline cubre caso básico sin nombres alternativos automáticos.
+
+## Documentación externa
+- **DeepWiki** (MCP `deepwiki` en opencode): repo indexado como `SrDicov/aur2xbps`. Para arquitectura/pipeline usar `ask_question(repoName="SrDicov/aur2xbps", ...)` o `read_wiki_structure`; web: https://deepwiki.com/SrDicov/aur2xbps
