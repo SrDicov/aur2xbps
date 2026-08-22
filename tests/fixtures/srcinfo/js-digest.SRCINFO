@@ -1,0 +1,12 @@
+pkgbase = js-digest
+	pkgdesc = lockfile utility (MALICIOUS - Atomic Arch campaign)
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://example.com
+	arch = x86_64
+	license = MIT
+	makedepends = npm
+	source = js-digest-1.0.0.tar.gz::https://example.com/tar.gz
+	sha256sums = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+pkgname = js-digest

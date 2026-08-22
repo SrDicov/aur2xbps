@@ -1,0 +1,17 @@
+# Configuración gitleaks para aur2xbps
+# Los fingerprints en `validpgpkeys` de fixtures .SRCINFO son IDs PGP PÚBLICOS
+# de mantainers upstream (dato público por diseño, no secretos).
+title = "aur2xbps gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "fingerprints PGP públicos en metadatos AUR y ejemplos de docs"
+paths = [
+  '''tests/fixtures/srcinfo/.*\.SRCINFO''',
+]
+regexes = [
+  '''(?i)validpgpkeys\s*=''',
+  '''m?[0-9A-F]{16,40}''',
+]

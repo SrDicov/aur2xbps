@@ -1,0 +1,4 @@
+[submodule "common/void-packages"]
+	path = common/void-packages
+	url = https://github.com/void-linux/void-packages.git
+    branch = master

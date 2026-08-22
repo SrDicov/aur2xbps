@@ -1,0 +1,40 @@
+# Nix
+/result*
+/direnv/
+
+# Void / build artifacts
+hostdir/
+masterdir/
+/void-packages/
+*.xbps
+repo-local/
+fake-root/
+sources/
+derivations/
+cache/
+.xbps-pkg-*
+
+# Secretos y material criptográfico — NUNCA al repo
+*.pem
+*.key
+*.crt
+*.p12
+*.sig
+*.sig2
+privkey*
+.env
+.env.*
+
+# Logs y capturas
+*.log
+*.pcap
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# OS / editor
+.DS_Store

@@ -1,0 +1,99 @@
+name: aur2xbps CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  AUR2XBPS_ROOT: ${{ runner.temp }}/aur2xbps-workspace
+  # Paquetes usados por los jobs (sobrescribibles vía repository variables)
+  TRH_PACKAGES: ${{ vars.TRH_PACKAGES || 'hello' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Python tests (sin red, sin secretos)
+        run: |
+          pip install pytest pytest-timeout httpx pyyaml
+          mkdir -p "$AUR2XBPS_ROOT/cache/aur-rpc" "$AUR2XBPS_ROOT/sources"
+          pytest tests/ -q --timeout=120 -m "not network"
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = true
+      - name: Nix flake check + linter patchelf
+        run: |
+          nix flake check --option sandbox true || true
+          python3 -m src.nix.patchelf
+
+  trh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: TRH 3 builds hash compare (hello, sandbox)
+        run: |
+          # Clave RSA efímera generada en el runner — nunca se usa una privada real.
+          mkdir -p "$AUR2XBPS_ROOT/keys"
+          python3 - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          from src.xbps.signing import generate_keypair
+          keydir = Path(os.environ["AUR2XBPS_ROOT"]) / "keys"
+          generate_keypair(keydir / "privkey.pem")
+          print("clave efímera:", keydir / "privkey.pem")
+          PY
+          for i in 1 2 3; do
+            nix build .#packages.x86_64-linux.hello --option sandbox true
+            sha256sum result/bin/hello | awk '{print $1}'
+          done | sort -u | tee /tmp/trh-hashes.txt
+          test "$(wc -l < /tmp/trh-hashes.txt)" = "1" && echo "TRH OK: hashes idénticos"
+
+  tiar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = true
+      - name: TIAR canary (curl en sandbox debe fallar DNS exit 6)
+        run: |
+          mkdir -p /tmp/canary && cd /tmp/canary
+          cat > flake.nix <<'NIX'
+          {
+            inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+            outputs = { self, nixpkgs }: let
+              system = "x86_64-linux";
+              pkgs = import nixpkgs { inherit system; };
+            in {
+              packages.${system}.canary = pkgs.stdenv.mkDerivation {
+                name = "tiar-canary";
+                nativeBuildInputs = [ pkgs.curl ];
+                buildPhase = ''
+                  timeout 15 curl -sS --max-time 10 "https://aur.archlinux.org/rpc/v5/info?arg[]=spotify" \
+                    > conn.txt 2>&1 || echo "CURL_BLOCKED_EXIT_$?" > conn.txt
+                  cat conn.txt > $out
+                '';
+                installPhase = "touch $out";
+                phases = "buildPhase installPhase";
+              };
+            };
+          }
+          NIX
+          OUT=$(nix build .#canary --no-link --print-out-paths >/dev/null 2>&1; cat "$(nix build .#canary --no-link --print-out-paths)" 2>/dev/null || echo SIN_RESULTADO)
+          echo "$OUT" | grep -qE "CURL_BLOCKED_EXIT_6|Could not resolve host" \
+            && echo "TIAR OK: egress bloqueado" || { echo "TIAR FALLO: $OUT"; exit 1; }

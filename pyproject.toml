@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aur2xbps"
+version = "0.2.0"
+description = "Bridge AUR (Arch) -> Void Linux (XBPS) via Nix hermetic builds"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+authors = [{ name = "aur2xbps contributors" }]
+dependencies = ["httpx", "pyyaml"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-timeout"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+markers = ["network: tests que acceden a red real (AUR RPC/git)"]
+
+[project.scripts]
+aur2xbps = "src.cli:main"

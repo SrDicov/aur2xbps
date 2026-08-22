@@ -1,0 +1,19 @@
+pkgbase = paccat
+	pkgdesc = Print pacman package files
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/morganamilo/paccat
+	arch = i686
+	arch = pentium4
+	arch = x86_64
+	arch = arm
+	arch = armv7h
+	arch = armv6h
+	arch = aarch64
+	license = GPL3
+	makedepends = cargo
+	depends = pacman
+	source = paccat-0.2.0.tar.gz::https://github.com/Morganamilo/paccat/archive/v0.2.0.tar.gz
+	sha256sums = fb47c95307d94927b19f9377aa0ed06a98ed8e398ecf6ad7c02c21ca49f8d2fd
+
+pkgname = paccat
