@@ -76,7 +76,17 @@ def prepare_package(pkgname: str, sources_dir: Path = DEFAULT_SOURCES,
     result.srcinfo = si
 
     # 4. FILTRO DE SEGURIDAD previo a descarga de fuentes
-    block, reasons = check_atomic_arch(si)
+    # H-2.1: pasar el TEXTO del PKGBUILD (lectura estática, jamás ejecutado)
+    # para que la heurística JS opere sobre evidencia real, no solo metadatos.
+    raw_pkgbuild: str | None = None
+    pkgbuild_path = dest / "PKGBUILD"
+    if pkgbuild_path.exists():
+        try:
+            raw_pkgbuild = pkgbuild_path.read_text(
+                encoding="utf-8", errors="replace")[:262_144]   # cap anti-DoS
+        except OSError:
+            raw_pkgbuild = None
+    block, reasons = check_atomic_arch(si, raw_pkgbuild_text=raw_pkgbuild)
     if block:
         result.blocked = True
         result.errors.extend(reasons)

@@ -117,6 +117,10 @@ class Config:
     restricted_mode: bool = True        # bloquear empaquetado de no-redistribuibles
     offline: bool = False               # solo caché local, sin red
     build_timeout: int = 3600           # techo duro por compilación (segundos)
+    # [security] claves PGP de mantenedores AUR de confianza (H-2.2): la
+    # intersección con validpgpkeys del .SRCINFO habilita exenciones del
+    # filtro JS con cadena de custodia real.
+    trusted_pgp_keys: List[str] = field(default_factory=list)
 
     # ---- derivadas (no configurables) ----
     @property
@@ -260,6 +264,10 @@ def _apply_env(cfg: Config) -> None:
             cfg.build_timeout = int(os.environ["AUR2XBPS_BUILD_TIMEOUT"])
         except ValueError:
             pass
+    if os.environ.get("AUR2XBPS_TRUSTED_PGP_KEYS"):
+        cfg.trusted_pgp_keys = [
+            k.strip() for k in os.environ["AUR2XBPS_TRUSTED_PGP_KEYS"].split(",")
+            if k.strip()]
 
 
 def _resolve_derived(cfg: Config) -> None:
