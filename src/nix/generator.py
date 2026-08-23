@@ -561,7 +561,9 @@ DERIV_CARGO = """
             {hash_attr} = "{hash_val}";
           }};
           nativeBuildInputs = with pkgs; [ pkg-config file {native_inputs} ];
-          buildInputs = with pkgs; [ {build_inputs} ];
+          # openssl: openssl-sys es la dependencia nativa más común del
+          # ecosistema Rust; sin ella el build revienta en el runner
+          buildInputs = with pkgs; [ openssl {build_inputs} ];
           dontStrip = true;
           # vendor placeholder → build_with_hash_fix lo sustituye por el
           # sha256 real que Nix reporta en el error del FOD. Attr correcto
@@ -587,6 +589,8 @@ DERIV_GO = """
           buildInputs = with pkgs; [ {build_inputs} ];
           doCheck = false;
           ldflags = [ "-s -w" ];
+          # solo el paquete raíz: ./... arrastra dirs sin .go (scripts/gendocs)
+          subPackages = [ "." ];
           # vendor placeholder → auto-corregido en build (ver HASH_DUMMY)
           vendorHash = "{hash_vendor}";
           meta = with pkgs.lib; {{
