@@ -245,8 +245,17 @@ def _build_with_nix(pkgname: str) -> int:
         _die(f"no se pudo obtener .SRCINFO de '{pkgname}'", 2)
     cfg = get_config()
     out_dir = cfg.derivations_dir / pkgname
-    transpile(pr.srcinfo, out_dir)
-    ok, msg = build_with_hash_fix(out_dir, pkgname, timeout=max(cfg.build_timeout, 1800))
+    flake = transpile(pr.srcinfo, out_dir)
+    # python-pep517/legacy y VCS-python generan el attr "<pkg>-src"
+    # (staging de fuentes; el build real ocurre en Void)
+    attr = pkgname
+    try:
+        ftxt = flake.read_text()
+        if f'"{attr}" =' not in ftxt and f'"{attr}-src" =' in ftxt:
+            attr = f"{pkgname}-src"
+    except OSError:
+        pass
+    ok, msg = build_with_hash_fix(out_dir, attr, timeout=max(cfg.build_timeout, 1800))
     if not ok:
         _die(f"nix build falló: …{msg[-400:]}", 6)
     pkg0 = next(iter(pr.srcinfo.packages.values()))

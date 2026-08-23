@@ -47,7 +47,9 @@ DERIVATION_BIN = '''
             url = "{url}";
             {hash_attr} = "{hash_val}";
           }};
-          nativeBuildInputs = with pkgs; [ {native_inputs} ];
+          # unzip/dpkg incondicionales: el unpackPhase de BIN los invoca por
+          # tipo de fuente y su ausencia reventaba el build (exit 127)
+          nativeBuildInputs = with pkgs; [ file unzip dpkg {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
           dontStrip = true;   # strip de stdenv corrompe binarios Go/precompilados
           dontWrapQtApps = true;  # el wrapper de Qt rompe apps precompiladas
@@ -1017,6 +1019,8 @@ SPECIFIED_GOT_RE = re.compile(
 # Attr inexistente en nixpkgs (renombras/eliminaciones upstream): se elimina
 # del flake y se reintenta — cubre clases completas sin mapeos uno a uno
 UNDEF_VAR_RE = re.compile(r"undefined variable '([A-Za-z0-9_.-]+)'")
+# Attr que existe pero lanza (ej. python2): mismo tratamiento
+REMOVED_RE = re.compile(r"([\w][\w.-]*)\s*=\s*throw \"[^\"]*has been removed")
 
 
 def _drop_undefined_var(flake_path: Path, name: str) -> bool:
@@ -1066,8 +1070,10 @@ def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 5,
         if not m:
             # attr inexistente (renombrado/eliminado upstream): quitar y reintentar
             u = UNDEF_VAR_RE.search(combined)
-            if u and _drop_undefined_var(flake, u.group(1)):
-                last_err = f"attr indefinido '{u.group(1)}' eliminado (intento {attempt + 1})"
+            r = None if u else REMOVED_RE.search(combined)
+            culprit = u.group(1) if u else (r.group(1) if r else "")
+            if culprit and _drop_undefined_var(flake, culprit):
+                last_err = f"attr indefinido '{culprit}' eliminado (intento {attempt + 1})"
                 continue
             return False, (combined[-2000:] or "error desconocido")
         got = m.group(1)
