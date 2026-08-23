@@ -158,7 +158,9 @@ jobs:
           mkdir -p /opt/xbps-bin
           for b in /opt/voidrootfs/usr/bin/xbps-*; do
             n=$(basename "$b")
-            printf '#!/bin/sh\nexec %s --library-path %s:%s %s "$@"\n' \
+            # XBPS_ARCH obligatorio: sin él el tool musl asume x86_64-musl
+            # y rechaza los .xbps glibc ("unmatched arch")
+            printf '#!/bin/sh\nXBPS_ARCH=x86_64\nexport XBPS_ARCH\nexec %s --library-path %s:%s %s "$@"\n' \
               "$LOADER" "$LIBXBPSDIR" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
             chmod +x "/opt/xbps-bin/$n"
           done
