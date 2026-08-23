@@ -148,25 +148,34 @@ jobs:
           mkdir -p /opt/voidrootfs
           curl -fsSL "$IDX$FILE" | tar -xJ -C /opt/voidrootfs
           test -x /opt/voidrootfs/usr/bin/xbps-create
-          # El loader puede ser symlink colgante según layout del tarball:
-          # resolver a fichero REAL ejecutable
+          # Diagnóstico del layout de musl en el tarball
+          ls -la /opt/voidrootfs/usr/lib/ | grep -iE "musl|libc" || true
+          # Resolver loader musl REAL: symlink puede colgar tras extraer
           LOADER=""
-          for cand in $(find /opt/voidrootfs -name 'ld-musl*' -o -name 'libc.musl-*' 2>/dev/null); do
-            r=$(readlink -f "$cand" 2>/dev/null || true)
-            if [ -n "$r" ] && [ -x "$r" ]; then LOADER="$r"; break; fi
+          LD_CAND="/opt/voidrootfs/usr/lib/ld-musl-x86_64.so.1"
+          TGT=$(readlink "$LD_CAND" 2>/dev/null || true)
+          for c in "$LD_CAND" \
+                   "${LD_CAND%/*}/${TGT:-}" \
+                   "/opt/voidrootfs/usr/lib/libc.so" \
+                   "/opt/voidrootfs/lib/libc.so" \
+                   $(find /opt/voidrootfs/usr/lib /opt/voidrootfs/lib \
+                          -maxdepth 1 -name 'libc.so*' -o -name 'ld-musl*' 2>/dev/null); do
+            [ -n "$c" ] || continue
+            [ -f "$c" ] || continue
+            chmod +x "$c" 2>/dev/null || true
+            if [ -x "$c" ] && [ -s "$c" ]; then LOADER="$c"; break; fi
           done
           if [ -z "$LOADER" ]; then
-            echo "::error::no se encontró ld-musl ejecutable en el rootfs"
-            find /opt/voidrootfs -name '*musl*' | head -20
+            echo "::error::sin loader musl utilizable"
             exit 1
           fi
-          echo "loader musl: $LOADER"
+          echo "loader musl: $LOADER ($(stat -c '%F %s bytes' "$LOADER"))"
           LIBDIR=$(dirname "$LOADER")
           mkdir -p /opt/xbps-bin
           for b in /opt/voidrootfs/usr/bin/xbps-*; do
             n=$(basename "$b")
-            printf '#!/bin/sh\nexec %s --library-path %s:%s/../usr/lib %s "$@"\n' \
-              "$LOADER" "$LIBDIR" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
+            printf '#!/bin/sh\nexec %s --library-path %s:/opt/voidrootfs/usr/lib %s "$@"\n' \
+              "$LOADER" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
             chmod +x "/opt/xbps-bin/$n"
           done
           /opt/xbps-bin/xbps-uhelper version
