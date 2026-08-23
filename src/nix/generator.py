@@ -137,6 +137,7 @@ ARCH_TO_NIX = {
     "make": "gnumake",
     # renombres históricos nixpkgs: gconf vive en gnome2.GConf
     "gconf": "gnome2.GConf",
+    "boost-libs": "boost",
     # libalpm vive en pacman (nixpkgs); Arch la separa
     "libalpm": "pacman", "pacman": "pacman",
     # GUI core
@@ -1006,15 +1007,34 @@ def transpile(srcinfo: SrcInfo, out_dir: Path) -> Path:
     return flake
 
 
-HASH_MISMATCH_RE = re.compile(r"got:\s+(sha256-[A-Za-z0-9+/=]+)")
+HASH_MISMATCH_RE = re.compile(r"got:\s+(sha(?:256|512)-[A-Za-z0-9+/=]+)")
 # FOD mismatch completo: permite sustituir el hash ESPECIFICADO por el real
-# en cualquier posición del flake (fetchurl, fetchgit, vendorHash…)
+# en cualquier posición del flake (fetchurl, fetchgit, vendorHash, npmDeps…)
 SPECIFIED_GOT_RE = re.compile(
-    r"specified:\s+(sha256-[A-Za-z0-9+/=]+).*?got:\s+(sha256-[A-Za-z0-9+/=]+)",
+    r"specified:\s+(sha(?:256|512)-[A-Za-z0-9+/=]+).*?"
+    r"got:\s+(sha(?:256|512)-[A-Za-z0-9+/=]+)",
     re.DOTALL)
+# Attr inexistente en nixpkgs (renombras/eliminaciones upstream): se elimina
+# del flake y se reintenta — cubre clases completas sin mapeos uno a uno
+UNDEF_VAR_RE = re.compile(r"undefined variable '([A-Za-z0-9_.-]+)'")
 
 
-def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 2,
+def _drop_undefined_var(flake_path: Path, name: str) -> bool:
+    """Elimina todas las ocurrencias del token indefinido en flake.nix."""
+    try:
+        content = flake_path.read_text()
+    except OSError:
+        return False
+    if name not in content:
+        return False
+    nuevo = re.sub(rf"(?<![\w.-]){re.escape(name)}(?![\w-])\s*", "", content)
+    if nuevo == content:
+        return False
+    flake_path.write_text(nuevo)
+    return True
+
+
+def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 5,
                         timeout: int = 600) -> tuple[bool, str]:
     """Build con auto-corrección de hash SKIP: Nix reporta el hash real en el
     error y lo parcheamos en flake.nix (equivalente a nix-prefetch-url)."""
@@ -1044,6 +1064,11 @@ def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 2,
             pass
         m = HASH_MISMATCH_RE.search(combined)
         if not m:
+            # attr inexistente (renombrado/eliminado upstream): quitar y reintentar
+            u = UNDEF_VAR_RE.search(combined)
+            if u and _drop_undefined_var(flake, u.group(1)):
+                last_err = f"attr indefinido '{u.group(1)}' eliminado (intento {attempt + 1})"
+                continue
             return False, (combined[-2000:] or "error desconocido")
         got = m.group(1)
         content = flake.read_text()
