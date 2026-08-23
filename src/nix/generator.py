@@ -625,7 +625,7 @@ DERIV_NODEJS = """
             url = "{url}";
             {hash_attr} = "{hash_val}";
           }};
-          nativeBuildInputs = with pkgs; [ file {native_inputs} ];
+          nativeBuildInputs = with pkgs; [ file nodejs python3 {native_inputs} ];
           buildInputs = with pkgs; [ nodejs {build_inputs} ];
           dontStrip = true;
           dontNpmBuild = true;
@@ -952,6 +952,9 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
                                   derivations="".join(derivations),
                                   restricted_header=_restricted_header(srcinfo),
                                   nix_system=nix_system(cfg_arch))
+    # renombres dentro del namespace python3Packages (attrs históricos)
+    flake = re.sub(r"python3Packages\.dbus\b(?!-)",
+                   "python3Packages.dbus-python", flake)
     flake_path = out_dir / "flake.nix"
     flake_path.write_text(flake)
     return flake_path
