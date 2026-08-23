@@ -110,7 +110,7 @@ jobs:
       AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
       AUR2XBPS_LOGS: /tmp/aur2xbps-logs
       AUR2XBPS_VOID_DIR: ${{ github.workspace }}/common/void-packages
-      AUR2XBPS_MASTERDIR: /tmp/aur2xbps-workspace/void/masterdir
+      AUR2XBPS_MASTERDIR: ${{ github.workspace }}/common/void-packages/masterdir-x86_64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -150,8 +150,11 @@ jobs:
         if: inputs.engines != 'nix'
         run: |
           export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
+          # runners ubuntu-24.04: AppArmor bloquea userns sin privilegio
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           cd "$AUR2XBPS_VOID_DIR"
-          sudo env PATH="$PATH" XBPS_ALLOW_CHROOT_BREAKOUT=1 ./xbps-src binary-bootstrap
+          sudo env PATH="$PATH" XBPS_CHROOT_CMD=uchroot \
+            ./xbps-src -A x86_64 binary-bootstrap
 
       - name: Validar shard ${{ matrix.shard }}
         env:
@@ -165,6 +168,8 @@ jobs:
           AUR2XBPS_COPY_BINPKGS: "0"
         run: |
           export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
+          export XBPS_CHROOT_CMD=uchroot
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
           OUT_MD="results-shard-${SHARD}of${SHARDS}.md"
           if [ -n "$ONLY" ]; then

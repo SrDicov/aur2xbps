@@ -209,9 +209,10 @@ def _build_with_xbps_src(pkgname: str) -> int:
         priv = ["env", "XBPS_ALLOW_CHROOT_BREAKOUT=1"]
     else:
         priv = []
-    if not (cfg.masterdir / "etc").is_dir():
+    if not (cfg.effective_masterdir / "etc").is_dir():
         print("[build] binary-bootstrap…", file=sys.stderr)
-        subprocess.run(priv + ["./xbps-src", "binary-bootstrap"], cwd=vp,
+        subprocess.run(priv + ["./xbps-src", "-A", cfg.arch,
+                               "binary-bootstrap"], cwd=vp,
                        check=True, timeout=cfg.build_timeout)
     # 3. limpiar estado stale: dobuild.sh toca el stamp *_build_done ANTES de
     #    instalar, así que un fallo posterior (pkglint) lo deja puesto y TODOS
