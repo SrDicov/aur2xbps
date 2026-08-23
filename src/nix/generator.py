@@ -133,6 +133,8 @@ ARCH_TO_NIX = {
     "glibc": "glibc", "gcc-libs": "gcc-unwrapped.lib", "libgcc": "gcc-unwrapped.lib",
     "libstdc++": "gcc-unwrapped.lib", "filesystem": "filesystem",
     "go": "go", "gcc-go": "gccgo",
+    # make vive dentro de stdenv; el attr explícito es gnumake
+    "make": "gnumake",
     # libalpm vive en pacman (nixpkgs); Arch la separa
     "libalpm": "pacman", "pacman": "pacman",
     # GUI core
@@ -345,6 +347,14 @@ def detect_ecosystem(pkg: SrcInfoPackage) -> str:
         return "cargo"
     if any(x in ("go", "gcc-go", "go-pie") for x in md_names):
         return "go"
+    # Node.js: makedepends node/npm o tarballs de registry.npmjs.org
+    try:
+        src_blob = " ".join(pkg.sources_for()).lower()
+    except Exception:                                   # noqa: BLE001
+        src_blob = ""
+    if ("nodejs" in md_names or "npm" in md_names
+            or "registry.npmjs.org" in src_blob or name.startswith("nodejs-")):
+        return "nodejs"
     if "meson" in md:
         return "meson"
     if "cmake" in md:
@@ -601,6 +611,28 @@ DERIV_GO = """
 """.rstrip(" ") + ";"
 
 
+DERIV_NODEJS = """
+        "{pkgname}" = pkgs.buildNpmPackage rec {{
+          pname = "{pkgname}";
+          version = "{pkgver}";
+          src = pkgs.fetchurl {{
+            url = "{url}";
+            {hash_attr} = "{hash_val}";
+          }};
+          nativeBuildInputs = with pkgs; [ file {native_inputs} ];
+          buildInputs = with pkgs; [ nodejs {build_inputs} ];
+          dontStrip = true;
+          dontNpmBuild = true;
+          # deps placeholder → auto-corregido en build (ver HASH_DUMMY)
+          npmDepsHash = "{hash_vendor}";
+          meta = with pkgs.lib; {{
+            description = "{pkgdesc}";
+            platforms = [ "{nix_system}" ];
+          }};
+        }}
+""".rstrip(" ") + ";"
+
+
 ECOSYSTEM_TEMPLATES = {
     "python-pep517": DERIV_PYTHON_SOURCE_ONLY,
     "python-legacy": DERIV_PYTHON_SOURCE_ONLY,
@@ -610,6 +642,7 @@ ECOSYSTEM_TEMPLATES = {
     "suckless":      DERIV_SUCKLESS,
     "cargo":         DERIV_CARGO,
     "go":            DERIV_GO,
+    "nodejs":        DERIV_NODEJS,
 }
 SUPPORTED_ECOSYSTEMS = set(ECOSYSTEM_TEMPLATES) | {"python-pep517"}
 
@@ -888,8 +921,8 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
             hash_val=hash_val,
             hash_vendor=HASH_DUMMY,
             install_guard="",
-            build_inputs=build_inputs_str,
-            native_inputs=native_inputs,
+            build_inputs=_dedupe_inputs(build_inputs_str),
+            native_inputs=_dedupe_inputs(native_inputs),
             pkgdesc=pkgdesc,
             nix_system=nix_system(cfg_arch),
             **fmt_kwargs,
@@ -944,6 +977,14 @@ def resolve_nixos_ref(srcinfo: SrcInfo) -> str:
         if key and key in cfg.nixpkgs_pins:
             return cfg.nixpkgs_pins[key]
     return _os.environ.get("AUR2XBPS_NIXOS_REF") or NIXOS_REF
+
+
+def _dedupe_inputs(spec: str) -> str:
+    """Elimina duplicados preservando orden en listas de inputs Nix."""
+    seen: dict[str, None] = {}
+    for tok in (spec or "").split():
+        seen.setdefault(tok, None)
+    return " ".join(seen)
 
 
 def transpile(srcinfo: SrcInfo, out_dir: Path) -> Path:

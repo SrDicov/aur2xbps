@@ -155,6 +155,10 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           cd "$AUR2XBPS_VOID_DIR"
           ./xbps-src -A x86_64 binary-bootstrap
+          # Los estáticos del mirror (0.59) quedan viejos vs el chroot
+          # (>=0.60): a partir de aquí usamos los glibc del masterdir,
+          # versión exactamente emparejada.
+          echo "AUR2XBPS_XBPS_BIN_DIR=$AUR2XBPS_VOID_DIR/masterdir-x86_64/usr/bin" >> "$GITHUB_ENV"
 
       - name: Validar shard ${{ matrix.shard }}
         env:
