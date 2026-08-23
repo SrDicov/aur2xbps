@@ -135,16 +135,16 @@ jobs:
             experimental-features = nix-command flakes
             sandbox = true
 
-      - name: xbps estáticos (mirror oficial de Void)
+      - name: xbps estáticos 0.60+ (pkgsStatic de nixpkgs)
         run: |
-          IDX=https://repo-default.voidlinux.org/static/
-          FILE=$(curl -sS "$IDX" | grep -oE 'xbps-static-static-[0-9._]+\.x86_64-musl\.tar\.gz' | sort -V | tail -1)
-          echo "descargando $FILE"
-          mkdir -p /opt/xbps-static
-          curl -fsSL "$IDX$FILE" | tar xz -C /opt/xbps-static
-          BIN_DIR=$(dirname "$(find /opt/xbps-static -name xbps-create | head -1)")
-          test -x "$BIN_DIR/xbps-rindex"
-          echo "AUR2XBPS_XBPS_BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
+          # El dir /static del mirror está congelado en 0.59 (< mínimo de
+          # void-packages HEAD); pkgsStatic.xbps da binarios musl estáticos
+          # de la versión corriente, emparejados con el chroot.
+          nix build github:NixOS/nixpkgs/nixos-unstable#pkgsStatic.xbps \
+            -o /opt/xbps-result --print-build-logs
+          test -x /opt/xbps-result/bin/xbps-create
+          test -x /opt/xbps-result/bin/xbps-rindex
+          echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-result/bin" >> "$GITHUB_ENV"
 
       - name: Bootstrap xbps-src
         if: inputs.engines != 'nix'
