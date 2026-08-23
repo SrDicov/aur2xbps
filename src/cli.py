@@ -212,7 +212,13 @@ def _build_with_xbps_src(pkgname: str) -> int:
     if not (cfg.masterdir / "etc").is_dir():
         print("[build] binary-bootstrap…", file=sys.stderr)
         subprocess.run(priv + ["./xbps-src", "binary-bootstrap"], cwd=vp, check=True)
-    # 3. compilar (-f fuerza re-ejecución de fases: sin esto, stamps
+    # 3. limpiar estado stale: dobuild.sh toca el stamp *_build_done ANTES de
+    #    instalar, así que un fallo posterior (pkglint) lo deja puesto y TODOS
+    #    los retries siguientes se saltan fetch/extract/install en silencio
+    #    (incluso con -f, que solo re-ejecuta el target 'build').
+    subprocess.run(priv + ["./xbps-src", "clean", pkgname], cwd=vp,
+                   capture_output=True)
+    # 4. compilar (-f fuerza re-ejecución de fases: sin esto, stamps
     #    *_install_done de intentos previos saltan do_install silenciosamente)
     r = subprocess.run(
         priv + ["./xbps-src", "-f", "-A", cfg.arch, "pkg", pkgname], cwd=vp)

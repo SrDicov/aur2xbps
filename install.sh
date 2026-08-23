@@ -138,7 +138,7 @@ import sys
 sys.path.insert(0, "$SCRIPT_DIR")
 from src.xbps.signing import generate_keypair
 from pathlib import Path
-generate_keypair(Path("$KEYS_DIR/privkey.pem"))
+generate_keypair(Path("$KEYS_DIR/privkey.pem"), Path("$KEYS_DIR/pubkey.pem"))
 print("par RSA generado")
 PY
     )

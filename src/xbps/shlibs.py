@@ -78,7 +78,7 @@ class ShlibsDB:
                 # 0x0000000000000001 (NEEDED) Shared library: [libtinfo.so.6]
                 if "[" in line:
                     soname = line.split("[")[1].split("]")[0]
-                    mapped = self.lookup(soname)
+                    mapped = self.soname_to_dep(soname)
                     if mapped:
                         deps.append(mapped)
         return sorted(set(deps))

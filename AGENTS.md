@@ -53,7 +53,11 @@ python3 -m src.nix.patchelf             # linter de flakes generados (standalone
 ## Gotchas críticos
 - **dash = /bin/sh en Void**: POSIX estricto, SIN expansión de llaves `{a,b}` ni bashismos en scripts con shebang `#!/bin/sh`.
 - **xbps-install sin `-y`**: con stdin en EOF imprime `Aborting!` y retorna exit 0 → éxito falso. Siempre `-Sy`.
-- **Headers `-devel` son build-time**: en el chroot solo se instalan hostmakedepends/makedepends antes de compilar; las libs runtime las resuelve xbps vía shlibs. Nunca emitir `-devel` en `depends=`.
+- **Stamps de xbps-src**: dobuild toca `*_build_done` ANTES de instalar; un fallo posterior (pkglint) lo deja puesto y TODOS los retries saltan fetch/extract/install en silencio (incluso con `-f`, que solo re-ejecuta el target `build`). Siempre `./xbps-src clean <pkg>` antes de reintentar.
+- **`nostrip=yes`, NO `dontStrip=true`**: dontStrip es convención Nix; xbps-src la ignora y el hook strip corrompe/rechaza binarios upstream.
+- **`provides` exige revisión**: xbps 0.60 rechaza `foo-1.0` (los ejemplos de su propia help fallan); usar `foo-1.0_1`.
+- **`xbps-rindex -f -a`**: sin `-f` conserva silenciosamente la entrada previa si el pkgver ya estaba indexado → repodata stale tras re-empaquetar.
+- **Headers `-devel` son build-time**: en el chroot solo se instalan hostmakedepends/makedepends antes de compilar; las libs runtime las resuelve xbps vía shlibs. Nunca emitir `-devel` en `depends=`. Sin versión en makedepends ("template version is used always").
 - **pkg-config obligatorio al enlazar libs**: sin él los Makefiles caen a LDLIBS estilo Debian (`-ltinfo`) inexistentes en Void (tinfo va fusionado en libncursesw).
 - **patchelf orden mandatorio**: rpath primero, interpreter después, invocaciones separadas. Combinados → ELF corrupto. Linter falla si detecta ambos en misma línea. `chmod +w` antes/después (Nix store read-only).
 - **patchelf sobre binarios Go es destructivo**: saltarse ELFs que ya no referencian /nix/store (check readelf antes de parchear).

@@ -107,9 +107,16 @@ def create_xbps(
             raise RuntimeError("xbps-create no generó .xbps")
         generated = candidates[0]
         # Verificar reproducibilidad tar args si existe
-        # Mover
-        generated.rename(out_path)
-    return out_path
+        # Mover: /tmp puede ser tmpfs distinto → os.rename falla con EXDEV;
+        # shutil.move copia+mueve entre dispositivos.
+        import shutil
+        if out_path.is_dir():
+            target = out_path / generated.name
+        else:
+            target = out_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(generated), str(target))
+    return target
 
 def rindex_add(repo_dir: Path, xbps_files: List[Path], sign: bool = True,
                privkey: Optional[Path] = None,
@@ -133,8 +140,9 @@ def rindex_add(repo_dir: Path, xbps_files: List[Path], sign: bool = True,
     if not files:
         return
 
-    # 1. indexar
-    _run([XBPS_RINDEX(), "-a"] + files)
+    # 1. indexar (-f obligatorio: sin él xbps-rindex conserva silenciosamente
+    #    la entrada previa si el pkgver ya estaba indexado, con metadatos stale)
+    _run([XBPS_RINDEX(), "-f", "-a"] + files)
 
     if sign and privkey and Path(privkey).exists():
         # 2. firmar cada paquete (.sig2). xbps-rindex NO regenera firmas

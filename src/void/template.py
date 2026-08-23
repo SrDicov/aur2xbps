@@ -14,6 +14,7 @@ build_style elegido por heurística (misma detección que el transpilador Nix):
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -235,6 +236,17 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
         checksums = [src_sums[i] for i in kept_idx
                      if i < len(src_sums) and src_sums[i] != "SKIP"]
         needs_hash = len(checksums) != len(urls)
+        # Variantes de microarquitectura (-baseline vs moderna): quedarse SOLO
+        # con las baseline — máxima compatibilidad de CPU. Instalar ambas sobre
+        # la misma ruta termina ejecutando la que exige AVX2 → SIGILL.
+        if any("-baseline" in u for u in urls) and len(checksums) == len(urls):
+            pairs = [(u, c) for u, c in zip(urls, checksums) if "-baseline" in u]
+            if 0 < len(pairs) < len(urls):
+                urls = [u for u, _ in pairs]
+                checksums = [c for _, c in pairs]
+                warnings.append(
+                    "variantes de microarch: se empaqueta solo -baseline "
+                    "(compatibilidad CPU máxima)")
 
         build_style = choose_build_style(pkg, urls)
         copy_target = None
@@ -254,6 +266,18 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
                 checksums = computed
                 needs_hash = False
                 hash_source = "calculado"
+        # Refresh opt-in de hashes stale (p.ej. google-chrome re-publica el
+        # .deb bajo la misma URL y el .SRCINFO queda desfasado). NUNCA es
+        # silencioso: exige AUR2XBPS_REFRESH_HASHES=1 y avisa en la plantilla.
+        if (checksums and not cfg.offline
+                and os.environ.get("AUR2XBPS_REFRESH_HASHES") == "1"):
+            computed = _compute_hashes(urls)
+            if computed and computed != checksums:
+                checksums = computed
+                hash_source = "recalculado (AUR2XBPS_REFRESH_HASHES)"
+                warnings.append(
+                    "hashes del .SRCINFO desfasados: recalculados por "
+                    "AUR2XBPS_REFRESH_HASHES=1; revisar el origen")
         if needs_hash:
             warnings.append(
                 f"{len(urls)} distfiles vs {len(checksums)} checksums: revisar antes de compilar")
@@ -264,10 +288,20 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
         # ANTES de compilar: los headers (*-devel) son dependencia de build.
         # Las libs compartidas runtime las añade xbps automáticamente vía
         # common/shlibs al crear el paquete, así que depends queda limpio.
-        make_libs = [d for d in dict.fromkeys(mapped_makedepends + depends)
-                     if d.endswith("-devel")]
-        make_tools = [d for d in mapped_makedepends if not d.endswith("-devel")]
-        depends = [d for d in depends if not d.endswith("-devel")]
+        # OJO: comparar el nombre base SIN operador/versión ("foo-devel>=1")
+        # también es header; endswith sobre el string completo falla ahí.
+        import re as _re
+
+        def _base(d: str) -> str:
+            return _re.split(r"[<>=]+", d, maxsplit=1)[0]
+
+        # xbps-src rechaza versiones en hostmakedepends/makedepends ("template
+        # version is used always"): emitir siempre el nombre base pelado.
+        make_libs = sorted({_base(d) for d in dict.fromkeys(mapped_makedepends + depends)
+                            if _base(d).endswith("-devel")})
+        make_tools = [d for d in dict.fromkeys(mapped_makedepends)
+                      if not _base(d).endswith("-devel")]
+        depends = [d for d in depends if not _base(d).endswith("-devel")]
         if make_libs and "pkg-config" not in make_tools:
             # Los builds que enlazan librerías invocan pkg-config para obtener
             # flags/libs; sin él los Makefiles caen a LDLIBS hardcodeados estilo
@@ -287,6 +321,11 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
             lines.append(f'build_style="{build_style}"')
         elif urls:
             lines.append("create_wrksrc=yes")
+            # binarios precompilados: nopie evita el rechazo de ELFs non-PIE
+            # (bun, etc.) y nostrip (convención xbps-src, NO dontStrip de Nix)
+            # evita que el hook strip toque/corrompa binarios upstream.
+            lines.append("nopie=yes")
+            lines.append("nostrip=yes")
         # NOTA: no emitir 'archs=noarch' — xbps-src lo trata como restricción
         # y falla ("cannot be built for x86_64"); los paquetes arch-independientes
         # simplemente no restringen archs.
@@ -313,8 +352,26 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
             lines.append(f'homepage="{_clean(pkg.url)}"')
         if urls:
             lines.append(f'distfiles="{" ".join(urls)}"')
+            # distfiles que NO son archivos comprimidos (metadatos de repo,
+            # firmas .gpg/.sig, Release/Packages de apt, etc.): xbps-src no
+            # sabe extraerlos → skip_extraction (se descargan y verifican
+            # checksum igualmente).
+            _ARCH_EXTS = (".zip", ".tgz", ".tar.gz", ".tar.bz2", ".tbz2",
+                          ".tar.xz", ".txz", ".tar.zst", ".tzst", ".tar",
+                          ".deb", ".rpm", ".appimage")
+            _skip = []
+            for u in urls:
+                # nombre local: parte tras '>' o basename de la URL
+                if ">" in u:
+                    name = u.rsplit(">", 1)[-1]
+                else:
+                    name = u.split("://", 1)[-1].split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+                if not name.lower().endswith(_ARCH_EXTS):
+                    _skip.append(name)
+            if _skip:
+                lines.append(f'skip_extraction="{" ".join(_skip)}"')
             if checksums:
-                if hash_source == "calculado":
+                if hash_source in ("calculado", "recalculado (AUR2XBPS_REFRESH_HASHES)"):
                     lines.append("# hashes SHA-256 calculados al generar la plantilla")
                 lines.append(f'checksum="{" ".join(checksums)}"')
             else:
@@ -339,12 +396,68 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
                 "_doinstall() {",
                 "\t# Instalación genérica de artefactos precompilados.",
                 "\t# Ajustar rutas al layout real del tarball/deb.",
-                '\tif [ -d usr ]; then vcopy usr /usr; fi',
-                '\tif [ -d opt ]; then vcopy opt /opt; fi',
+                "\t# layout Debian (.deb): fusionar usr/ y opt/ en DESTDIR",
+                '\tif [ -d usr ]; then mkdir -p "${DESTDIR}/usr"; cp -a usr/. "${DESTDIR}/usr/"; fi',
+                '\tif [ -d opt ]; then mkdir -p "${DESTDIR}/opt"; cp -a opt/. "${DESTDIR}/opt/"; fi',
+                "\t# FHS/pkglint: los ELF no pueden vivir en /usr/share (apps Debian",
+                "\t# como spotify/vscode los meten ahí). Reubicar el directorio a",
+                "\t# /usr/lib y reescribir las referencias de los lanzadores.",
+                '\t_MAGIC=$(printf "\\177ELF")',
+                '\tfor _d in "${DESTDIR}/usr/share"/*; do',
+                '\t\t[ -d "$_d" ] || continue',
+                '\t\t_haself=0',
+                '\t\tfor f in $(find "$_d" -type f); do',
+                '\t\t\thead -c 4 "$f" 2>/dev/null | grep -q "$_MAGIC" && { _haself=1; break; }',
+                '\t\tdone',
+                '\t\t[ "$_haself" = 1 ] || continue',
+                '\t\t_rel=${_d#"${DESTDIR}/usr/share/"}',
+                '\t\tmkdir -p "${DESTDIR}/usr/lib"',
+                '\t\tmv "$_d" "${DESTDIR}/usr/lib/${_rel}"',
+                "\t\t# lanzadores anidados <app>/bin/* (convención Debian vía",
+                "\t\t# postinst, que aquí no existe) → enlazarlos en /usr/bin",
+                '\t\tif [ -d "${DESTDIR}/usr/lib/${_rel}/bin" ]; then',
+                '\t\t\tmkdir -p "${DESTDIR}/usr/bin"',
+                '\t\t\tfor _b in "${DESTDIR}/usr/lib/${_rel}/bin"/*; do',
+                '\t\t\t\t[ -f "$_b" ] || continue',
+                '\t\t\t\t_bn=$(basename "$_b")',
+                '\t\t\t\tln -sfn "/usr/lib/${_rel}/bin/${_bn}" "${DESTDIR}/usr/bin/${_bn}"',
+                "\t\t\tdone",
+                "\t\tfi",
+                "\t\t# re-enlazar symlinks de usr/bin que apuntaban a share/",
+                '\t\tfor _l in "${DESTDIR}/usr/bin"/*; do',
+                '\t\t\t[ -L "$_l" ] || continue',
+                '\t\t\t_lt=$(readlink "$_l")',
+                '\t\t\tcase "$_lt" in',
+                '\t\t\t\t*/share/${_rel}*)',
+                '\t\t\t\t\t_nt=$(printf "%s" "$_lt" | sed -e "s|\\.\./share/${_rel}|../lib/${_rel}|g" -e "s|/usr/share/${_rel}|/usr/lib/${_rel}|g")',
+                '\t\t\t\t\tln -sfn "$_nt" "$_l"',
+                '\t\t\t\t\t;;',
+                '\t\t\tesac',
+                '\t\tdone',
+                '\t\tfor b in "${DESTDIR}/usr/bin"/*; do',
+                '\t\t\t[ -f "$b" ] || continue',
+                '\t\t\thead -c 4 "$b" 2>/dev/null | grep -q "$_MAGIC" && continue',
+                '\t\t\tsed -i "s|/usr/share/${_rel}|/usr/lib/${_rel}|g" "$b"',
+                '\t\tdone',
+                '\tdone',
                 '\tfor f in *.AppImage; do',
                 "\t\t[ -e \"$f\" ] || continue",
                 "\t\tvinstall \"$f\" 755 usr/bin \"${f%.AppImage}\"",
                 "\tdone",
+                "\t# Apps tipo Chromium/Electron (zip plano o anidado): el binario necesita",
+                "\t# sus recursos (locales/, *.pak, icudtl.dat) EN EL MISMO directorio;",
+                "\t# instalar árbol completo en /usr/lib/<pkg> y enlazar /usr/bin.",
+                '\t_main="${pkgname%-bin}"',
+                '\tif [ ! -f "$_main" ] && [ -f "$_main/$_main" ]; then',
+                '\t\tcd "$_main"',
+                "\tfi",
+                '\tif [ -f "$_main" ] && { [ -d locales ] || [ -n "$(ls *.pak 2>/dev/null)" ]; }; then',
+                '\t\tvmkdir "usr/lib/${pkgname}"',
+                '\t\tvcopy . "usr/lib/${pkgname}"',
+                '\t\tmkdir -p "${DESTDIR}/usr/bin"',
+                '\t\tln -sf "../lib/${pkgname}/${_main}" "${DESTDIR}/usr/bin/${_main}"',
+                "\t\treturn",
+                "\tfi",
                 "\t# fallback: ejecutables ELF sueltos en la raíz del tarball",
                 "\tfor f in *; do",
                 '\t\t[ -f "$f" ] || continue',
@@ -366,6 +479,85 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
                 "\t\t\t;;",
                 "\t\t\t*) vinstall \"$f\" 755 usr/bin ;;",
                 "\t\tesac",
+                "\tdone",
+                "\t# último recurso: descubrir ELFs recursivamente cuando el layout",
+                "\t# es <dir-cualquiera>/<binario> y ninguna estrategia previa instaló",
+                "\t# nada. La guarda es 'cero archivos regulares en DESTDIR' porque los",
+                '\t# hooks de xbps-src pre-crean $DESTDIR/usr/lib vacío.',
+                '\tif [ -z "$(find "${DESTDIR}" -type f 2>/dev/null | head -n 1)" ]; then',
+                "\t\t# ¿bundle de app (Electron/Chromium)? Si junto a los ELFs hay",
+                "\t\t# ficheros NO-ELF (icudtl.dat, *.pak, resources/), el árbol entero",
+                "\t\t# es la app: copiarlo completo a /usr/lib/<pkg> y enlazar cada",
+                "\t\t# ejecutable de la raíz. Si no, instalar ELFs uno a uno.",
+                "\t\t_first=\"\"",
+                "\t\tfor f in $(find . -type f | sort); do",
+                '\t\t\tmagic=$(head -c 4 "$f" | od -An -tx1 | tr -d " \\n")',
+                "\t\t\tcase \"$magic\" in 7f454c46*) _first=\"$f\"; break ;; esac",
+                "\t\tdone",
+                '\t\t[ -n "$_first" ] || return',
+                '\t\t_top=$(printf "%s" "$_first" | sed "s|^\\./||; s|/.*||")',
+                "\t\t_bundle=0",
+                '\t\tif [ -n "$_top" ] && [ -d "$_top" ]; then',
+                '\t\t\tfor f in $(find "$_top" -type f); do',
+                '\t\t\t\tmagic=$(head -c 4 "$f" | od -An -tx1 | tr -d " \\n")',
+                "\t\t\t\tcase \"$magic\" in 7f454c46*) ;; *) _bundle=1; break ;; esac",
+                "\t\t\tdone",
+                "\t\tfi",
+                '\t\tmkdir -p "${DESTDIR}/usr/bin"',
+                '\t\tif [ "$_bundle" = 1 ]; then',
+                '\t\t\tcp -a "$_top"/. "${DESTDIR}/usr/lib/${pkgname}/"',
+                '\t\t\tfor f in "${DESTDIR}/usr/lib/${pkgname}"/*; do',
+                '\t\t\t\t[ -f "$f" ] || continue',
+                '\t\t\t\t[ -x "$f" ] || continue',
+                '\t\t\t\tb=$(basename "$f")',
+                '\t\t\t\tcase "$b" in',
+                "\t\t\t\t\t*.so|*.so.*|*.pak|*.dat|*.bin|*.json|*.node|chrome-sandbox|chrome_crashpad_handler) continue ;;",
+                "\t\t\t\tesac",
+                '\t\t\t\tln -sf "../lib/${pkgname}/${b}" "${DESTDIR}/usr/bin/${b}"',
+                "\t\t\t\t# alias en minúsculas: los tarballs upstream suelen traer",
+                "\t\t\t\t# capitalización tipo 'Postman' y el usuario espera 'postman'",
+                '\t\t\t\t_lc=$(printf "%s" "$b" | tr "A-Z" "a-z")',
+                '\t\t\t\tif [ "$_lc" != "$b" ] && [ ! -e "${DESTDIR}/usr/bin/${_lc}" ]; then',
+                '\t\t\t\t\tln -sf "../lib/${pkgname}/${b}" "${DESTDIR}/usr/bin/${_lc}"',
+                "\t\t\t\tfi",
+                "\t\t\tdone",
+                "\t\telse",
+                '\t\tvmkdir "usr/lib/${pkgname}"',
+                '\t\tfor f in $(find . -type f | sort); do',
+                '\t\t\tmagic=$(head -c 4 "$f" | od -An -tx1 | tr -d " \\n")',
+                '\t\t\tcase "$magic" in',
+                '\t\t\t\t7f454c46*) ;;',
+                '\t\t\t\t*) continue ;;',
+                '\t\t\tesac',
+                '\t\t\tb=$(basename "$f")',
+                '\t\t\tcase "$b" in',
+                '\t\t\t\t*.so|*.so.*) vinstall "$f" 755 "usr/lib/${pkgname}"; continue ;;',
+                '\t\t\tesac',
+                '\t\t\tcase "$f" in',
+                '\t\t\t\t*/bin/*) vinstall "$f" 755 usr/bin "$b" ;;',
+                '\t\t\t\t*)',
+                '\t\t\t\t\tvinstall "$f" 755 "usr/lib/${pkgname}"',
+                '\t\t\t\t\tmkdir -p "${DESTDIR}/usr/bin"',
+                '\t\t\t\t\tln -sf "../lib/${pkgname}/${b}" "${DESTDIR}/usr/bin/${b}"',
+                '\t\t\t\t\t;;',
+                '\t\t\tesac',
+                '\t\tdone',
+                '\t\tfor l in $(find . -type l); do',
+                '\t\t\ttb=$(basename "$(readlink "$l")")',
+                '\t\t\tb=$(basename "$l")',
+                '\t\tif [ -e "${DESTDIR}/usr/bin/$tb" ] && [ ! -e "${DESTDIR}/usr/bin/$b" ]; then',
+                '\t\t\tln -sf "$tb" "${DESTDIR}/usr/bin/$b"',
+                '\t\tfi',
+                '\tdone',
+                "\t\tfi",
+                "\tfi",
+                "\t# Compat Debian→Void: apps que enlazan libcurl-gnutls.so.4",
+                "\t# (Debian/Arch) corren con la libcurl de Void (OpenSSL); crear",
+                '\t# el shim junto a los ELFs de la app solo si se referencia.',
+                '\tfor _d in "${DESTDIR}"/opt/* "${DESTDIR}"/usr/share/* "${DESTDIR}"/usr/lib/*; do',
+                '\t\t[ -d "$_d" ] || continue',
+                '\t\tgrep -rls "libcurl-gnutls" "$_d" >/dev/null 2>&1 || continue',
+                '\t\t[ -e "$_d/libcurl-gnutls.so.4" ] || ln -s /usr/lib/libcurl.so.4 "$_d/libcurl-gnutls.so.4"',
                 "\tdone",
                 "}",
                 "",
