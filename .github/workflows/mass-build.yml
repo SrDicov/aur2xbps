@@ -171,11 +171,16 @@ jobs:
           fi
           echo "loader musl: $LOADER ($(stat -c '%F %s bytes' "$LOADER"))"
           LIBDIR=$(dirname "$LOADER")
+          # Localizar donde quedó realmente libxbps.so.6 en el rootfs
+          LIBXBPSDIR=$(dirname "$(find /opt/voidrootfs -name 'libxbps.so.6*' | head -1)")
+          test -n "$LIBXBPSDIR"
+          echo "libxbps en: $LIBXBPSDIR"
+          ls -la "$LIBXBPSDIR"/libxbps* || true
           mkdir -p /opt/xbps-bin
           for b in /opt/voidrootfs/usr/bin/xbps-*; do
             n=$(basename "$b")
-            printf '#!/bin/sh\nexec %s --library-path %s:/opt/voidrootfs/usr/lib %s "$@"\n' \
-              "$LOADER" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
+            printf '#!/bin/sh\nLD_LIBRARY_PATH=%s:%s\nexport LD_LIBRARY_PATH\nexec %s --library-path %s:%s %s "$@"\n' \
+              "$LIBXBPSDIR" "$LIBDIR" "$LOADER" "$LIBXBPSDIR" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
             chmod +x "/opt/xbps-bin/$n"
           done
           /opt/xbps-bin/xbps-create --version
