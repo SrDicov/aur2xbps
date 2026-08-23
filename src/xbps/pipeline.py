@@ -464,6 +464,19 @@ def full_pipeline(nix_result: Path, pkgname: str, pkgver: str, desc: str,
         out, sha = create_signed(stage, pkgver, desc, deps)
         res.xbps_path, res.sha256, res.signed = out, sha, True
         print(f"[pipeline] creado {out.name} sha256={sha[:16]}… firmado")
+        # repodata local: sin índice el chroot no ve el paquete
+        # ("not found in repository pool")
+        try:
+            from src.xbps.builder import rindex_add
+            from src.common.config import get_config as _gc
+            _c = _gc()
+            if _c.privkey and _c.privkey.is_file():
+                rindex_add(REPO, [out], sign=True, privkey=_c.privkey)
+            else:
+                rindex_add(REPO, [out], sign=False)
+            print(f"[pipeline] rindex: {REPO.name} indexado")
+        except Exception as _re:                                 # noqa: BLE001
+            print(f"[pipeline] WARNING rindex falló: {_re}", file=sys.stderr)
     except Exception as e:
         res.errors.append(str(e))
         return res
