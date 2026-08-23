@@ -1,0 +1,106 @@
+# Builds bajo demanda: transpila/build/empaqueta paquetes AUR en el runner.
+# Sin secretos: clave RSA efímera generada en runtime; workspace en /tmp.
+name: aur2xbps build packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Paquetes AUR separados por espacio (ej: paru yay google-chrome)"
+        required: true
+        type: string
+      engine:
+        description: "Motor de build"
+        type: choice
+        default: nix
+        options: [nix, xbps-src, auto]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Deps + workspace + clave RSA efímera
+        run: |
+          pip install httpx pyyaml
+          mkdir -p "$AUR2XBPS_ROOT/cache" "$AUR2XBPS_ROOT/sources" \
+                   "$AUR2XBPS_ROOT/repo" "$AUR2XBPS_ROOT/keys"
+          openssl genrsa -out "$AUR2XBPS_ROOT/keys/privkey.pem" 4096
+          chmod 600 "$AUR2XBPS_ROOT/keys/privkey.pem"
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = true
+
+      - name: xbps estáticos (última release void-linux/xbps)
+        run: |
+          API=https://api.github.com/repos/void-linux/xbps/releases/latest
+          URL=$(curl -sS "$API" | python3 -c '
+            import json, sys
+            assets = json.load(sys.stdin)["assets"]
+            print(next(a["browser_download_url"] for a in assets
+                       if "static" in a["name"] and "x86_64" in a["name"]
+                       and a["name"].endswith(".tar.gz")))')
+          mkdir -p /opt/xbps-static
+          curl -fsSL "$URL" | tar xz -C /opt/xbps-static
+          BIN_DIR=$(dirname "$(find /opt/xbps-static -name xbps-create | head -1)")
+          test -x "$BIN_DIR/xbps-rindex"
+          echo "AUR2XBPS_XBPS_BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
+
+      - name: Build paquetes (${{ inputs.engine }})
+        env:
+          PKGS: ${{ inputs.packages }}
+        run: |
+          FAILED=""
+          for pkg in $PKGS; do
+            echo "::group::=== $pkg ==="
+            if ! python3 -m src.cli build "$pkg" --engine "${{ inputs.engine }}" \
+                 > "/tmp/log-$pkg.json" 2>"/tmp/err-$pkg.log"; then
+              echo "::warning::$pkg FALLÓ"
+              FAILED="$FAILED $pkg"
+              tail -5 "/tmp/err-$pkg.log" || true
+            fi
+            cat "/tmp/log-$pkg.json" 2>/dev/null | tail -1 || true
+            echo "::endgroup::"
+          done
+          find "$AUR2XBPS_ROOT/repo" -name '*.xbps' -printf '%f %s bytes\n'
+          if [ -n "$FAILED" ]; then
+            echo "FAILED_PKGS=$FAILED" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+      - name: Resumen
+        if: always()
+        run: |
+          {
+            echo "## Paquetes solicitados"
+            echo '```'
+            echo "${{ inputs.packages }}"
+            echo '```'
+            echo "## Artefactos (.xbps)"
+            find "$AUR2XBPS_ROOT/repo" -name '*.xbps' -printf '%f\n' || echo "(ninguno)"
+            [ -n "$FAILED_PKGS" ] && echo ":x: Fallidos:$FAILED_PKGS" || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Subir artefactos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xbps-packages
+          path: |
+            ${{ env.AUR2XBPS_ROOT }}/repo/**/*.xbps
+            /tmp/log-*.json
+            /tmp/err-*.log
+          if-no-files-found: warn
