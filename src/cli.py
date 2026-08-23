@@ -245,7 +245,7 @@ def _build_with_nix(pkgname: str) -> int:
     cfg = get_config()
     out_dir = cfg.derivations_dir / pkgname
     transpile(pr.srcinfo, out_dir)
-    ok, msg = build_with_hash_fix(out_dir, pkgname)
+    ok, msg = build_with_hash_fix(out_dir, pkgname, timeout=max(cfg.build_timeout, 1800))
     if not ok:
         _die(f"nix build falló: {msg[:400]}", 6)
     pkg0 = next(iter(pr.srcinfo.packages.values()))
