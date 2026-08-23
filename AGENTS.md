@@ -76,6 +76,8 @@ python3 -m src.nix.patchelf             # linter de flakes generados (standalone
 - **Python cross-versión**: wheel con python sandbox ≠ python destino. Usar `build_python_in_void()` (python3 del masterdir Void).
 - **dpkg-deb en zip**: `case "$src" in *.deb)... *.zip) unzip...` en unpackPhase.
 - **`file` command**: necesario en nativeBuildInputs para detección ELF.
+- **Secretos en argv**: comandos con `--privkey`/`--sign-key` SIEMPRE vía `builder._run` (redacta en logs/excepciones); nunca `subprocess.run` directo ni print del cmd crudo.
+- **Smoke de paquetes**: extraer el `.xbps` a tmp y ejecutar resolviendo symlinks (`/usr/bin/x → ../lib/app/x` es patrón habitual post-reubicación); LD_LIBRARY_PATH al lib propio del paquete.
 
 ## Flujo operativo (CLI)
 ```bash
@@ -92,6 +94,7 @@ aur2xbps repo --sign
 3. **Empaquetar**: `full_pipeline(...)` → stage → patchelf selectivo → shlibs auto → create_signed → chroot → smoke.
 4. **Lote**: `python3 scripts/batch-validate.py [pkg...]` — registra `<workspace>/batch-results.json`.
 5. **VCS refresh**: `./scripts/vcs-refresh.sh [--offline|--force|--submodules]`.
+6. **Lote masivo**: `python3 scripts/mass-validate.py [--count-bin N --count-src M] [--engine both|nix|xbps-src] [--seed S]` — muestreo reproducible desde packages.gz, smoke funcional extrayendo el .xbps (resuelve symlinks `/usr/bin→../lib`), reanudable vía `mass-results.json`, reporte markdown con causas raíz agrupadas.
 
 ## Convenciones repo
 - **Rutas**: SIEMPRE vía `src/common/config.py` (Python) o `${AUR2XBPS_*}` en bash. Prohibido rutas absolutas personales, usuarios fijos, IPs o puertos en código.
