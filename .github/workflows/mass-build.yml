@@ -148,6 +148,12 @@ jobs:
           mkdir -p /opt/voidrootfs
           curl -fsSL "$IDX$FILE" | tar -xJ -C /opt/voidrootfs
           test -x /opt/voidrootfs/usr/bin/xbps-create
+          echo "=== DIAG rootfs ==="
+          file /opt/voidrootfs/usr/bin/xbps-uhelper || true
+          ( readelf -d /opt/voidrootfs/usr/bin/xbps-uhelper 2>/dev/null || true ) | grep -E "NEEDED|RPATH" || true
+          ls /opt/voidrootfs/usr/lib | grep -iE "xbps|libc\.|musl" || echo "(usr/lib sin xbps/libc)"
+          find /opt/voidrootfs -name "*xbps*" -not -path "*/var/*" | head -15
+          echo "=== FIN DIAG ==="
           # Diagnóstico del layout de musl en el tarball
           ls -la /opt/voidrootfs/usr/lib/ | grep -iE "musl|libc" || true
           # Resolver loader musl REAL: symlink puede colgar tras extraer
