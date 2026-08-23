@@ -196,14 +196,25 @@ jobs:
         if: inputs.engines != 'nix'
         run: |
           export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
-          # tools del masterdir (libxbps.so.6) exigidos en host por xbps-src
-          # una vez CHROOT_READY: resolver sus libs del propio masterdir
-          export LD_LIBRARY_PATH="$AUR2XBPS_MASTERDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           # runners ubuntu-24.04: AppArmor bloquea userns sin privilegio;
           # el resto corre como usuario normal (igual que en un host real)
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           cd "$AUR2XBPS_VOID_DIR"
           ./xbps-src -A x86_64 binary-bootstrap
+          # Post-bootstrap, xbps-src exige tools del masterdir (ABI .so.6)
+          # en HOST. Shims dedicados con LD_LIBRARY_PATH SOLO dentro del
+          # wrapper (el export global envenena binarios del runner).
+          MD="$AUR2XBPS_MASTERDIR"
+          test -x "$MD/usr/bin/xbps-uhelper"
+          mkdir -p /opt/xbps-bin-md
+          for b in "$MD"/usr/bin/xbps-*; do
+            n=$(basename "$b")
+            printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/usr/lib\nexport LD_LIBRARY_PATH\nexec %s "$@"\n' \
+              "$MD" "$b" > "/opt/xbps-bin-md/$n"
+            chmod +x "/opt/xbps-bin-md/$n"
+          done
+          /opt/xbps-bin-md/xbps-create --version
+          echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-bin-md" >> "$GITHUB_ENV"
           # Los estáticos del mirror (0.59) quedan viejos vs el chroot
           # (>=0.60): a partir de aquí usamos los glibc del masterdir,
           # versión exactamente emparejada.
@@ -221,7 +232,6 @@ jobs:
           AUR2XBPS_COPY_BINPKGS: "0"
         run: |
           export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
-          export LD_LIBRARY_PATH="$AUR2XBPS_MASTERDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
           OUT_MD="results-shard-${SHARD}of${SHARDS}.md"
