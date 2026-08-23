@@ -9,22 +9,27 @@ from pathlib import Path
 
 def generate_keypair(priv: Path, pub: Path | None = None, bits: int = 4096):
     priv = Path(priv)
+    if pub is None:
+        # default: pubkey junto a la privada (clientes del repo la necesitan)
+        pub = priv.parent / "pubkey.pem"
+    pub = Path(pub)
     priv.parent.mkdir(parents=True, exist_ok=True)
-    if priv.exists():
-        print(f"privkey ya existe: {priv}")
-        return priv
-    # xbps usa pem RSA; puede generarse con openssl
-    subprocess.run(["openssl", "genrsa", "-out", str(priv), str(bits)], check=True)
-    subprocess.run(["chmod", "600", str(priv)], check=True)
-    if pub:
-        # extraer pubkey
+    pub.parent.mkdir(parents=True, exist_ok=True)
+    if not priv.exists():
+        # xbps usa pem RSA; puede generarse con openssl
+        subprocess.run(["openssl", "genrsa", "-out", str(priv), str(bits)], check=True)
+        subprocess.run(["chmod", "600", str(priv)], check=True)
+    if not pub.exists():
+        # extraer pubkey también si solo existía la privada
         subprocess.run(["openssl", "rsa", "-in", str(priv), "-pubout", "-out", str(pub)], check=True)
+        print(f"pubkey generada: {pub}")
     return priv
 
 def sign_repo(repo_dir: Path, privkey: Path, signedby: str = "aur2xbps <aur2xbps@local>"):
     repo_dir = Path(repo_dir)
-    from src.xbps.builder import XBPS_RINDEX
-    subprocess.run([XBPS_RINDEX(), "--privkey", str(privkey), "--signedby", signedby, "--sign", str(repo_dir)], check=True)
+    from src.xbps.builder import XBPS_RINDEX, _run   # _run: redacción H-5.2 + timeout
+    _run([XBPS_RINDEX(), "--privkey", str(privkey), "--signedby", signedby,
+          "--sign", str(repo_dir)], timeout=300)
 
 if __name__ == "__main__":
     import sys

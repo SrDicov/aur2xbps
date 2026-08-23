@@ -22,9 +22,38 @@ def XBPS_CREATE() -> str:  # noqa: N802 — API histórica, resuelve en runtime
 def XBPS_RINDEX() -> str:  # noqa: N802
     return find_xbps_tool("xbps-rindex")
 
-def _run(cmd: List[str], env: dict | None = None):
-    print("$", " ".join(cmd))
-    subprocess.run(cmd, check=True, env=env)
+# H-5.2: banderas cuyo valor siguiente es un secreto/ruta sensible — jamás
+# imprimir en logs ni incrustar en excepciones (runit journal, tracebacks).
+SECRET_FLAGS = {"--privkey", "--sign-key"}
+
+
+def redact_cmd(cmd) -> List[str]:
+    """Copia del argv con valores tras banderas de secreto sustituidos."""
+    out: List[str] = []
+    redact_next = False
+    for part in cmd:
+        s = str(part)
+        if redact_next:
+            out.append("<redacted>")
+            redact_next = False
+        else:
+            out.append(s)
+            redact_next = s in SECRET_FLAGS
+    return out
+
+
+def _run(cmd: List[str], env: dict | None = None, timeout: int = 600):
+    print("$", " ".join(redact_cmd(cmd)))
+    try:
+        return subprocess.run(cmd, check=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        if isinstance(e.cmd, (list, tuple)):
+            e.cmd = redact_cmd(e.cmd)
+        raise
+    except subprocess.CalledProcessError as e:
+        if isinstance(e.cmd, (list, tuple)):
+            e.cmd = redact_cmd(e.cmd)
+        raise
 
 def create_xbps(
     stage_dir: Path,
@@ -107,9 +136,16 @@ def create_xbps(
             raise RuntimeError("xbps-create no generó .xbps")
         generated = candidates[0]
         # Verificar reproducibilidad tar args si existe
-        # Mover
-        generated.rename(out_path)
-    return out_path
+        # Mover: /tmp puede ser tmpfs distinto → os.rename falla con EXDEV;
+        # shutil.move copia+mueve entre dispositivos.
+        import shutil
+        if out_path.is_dir():
+            target = out_path / generated.name
+        else:
+            target = out_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(generated), str(target))
+    return target
 
 def rindex_add(repo_dir: Path, xbps_files: List[Path], sign: bool = True,
                privkey: Optional[Path] = None,
@@ -133,8 +169,9 @@ def rindex_add(repo_dir: Path, xbps_files: List[Path], sign: bool = True,
     if not files:
         return
 
-    # 1. indexar
-    _run([XBPS_RINDEX(), "-a"] + files)
+    # 1. indexar (-f obligatorio: sin él xbps-rindex conserva silenciosamente
+    #    la entrada previa si el pkgver ya estaba indexado, con metadatos stale)
+    _run([XBPS_RINDEX(), "-f", "-a"] + files)
 
     if sign and privkey and Path(privkey).exists():
         # 2. firmar cada paquete (.sig2). xbps-rindex NO regenera firmas

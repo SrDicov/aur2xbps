@@ -39,6 +39,23 @@ def has_nix() -> bool:
     return shutil.which("nix") is not None
 
 
+@lru_cache(maxsize=None)
+def find_tool(name: str, env_var: str | None = None) -> str:
+    """Resolución genérica de binarios no-xbps con override opcional por env
+    (p.ej. AUR2XBPS_ZSTD para pinear un zstd concreto y blindar el TRH)."""
+    if env_var:
+        override = os.environ.get(env_var)
+        if override and Path(override).is_file():
+            return override
+    which = shutil.which(name)
+    if which:
+        return which
+    raise FileNotFoundError(
+        f"{name} no encontrado en PATH"
+        + (f" ni vía {env_var}" if env_var else "")
+        + "; instálalo o exporta la variable de override")
+
+
 def nix_version() -> str | None:
     if not has_nix():
         return None
@@ -52,8 +69,19 @@ def nix_version() -> str | None:
 
 
 def sudo_prefix() -> list[str]:
-    """Prefijo de privilegios: [] si somos root; ['sudo'] en otro caso."""
+    """Prefijo de privilegios: [] si somos root; si no, el elevador
+    disponible. Void Linux trae doas (no sudo) — detectar en orden
+    $AUR2XBPS_PRIV → sudo → doas; error claro si no hay ninguno."""
     import os
+    import shutil as _sh
     if os.getuid() == 0:
         return []
-    return ["sudo"]
+    forced = os.environ.get("AUR2XBPS_PRIV")
+    if forced:
+        return [forced]
+    for tool in ("sudo", "doas"):
+        if _sh.which(tool):
+            return [tool]
+    raise FileNotFoundError(
+        "sin sudo ni doas en PATH y no somos root: instala doas o exporta "
+        "AUR2XBPS_PRIV=<elevador>")

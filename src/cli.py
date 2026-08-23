@@ -211,11 +211,19 @@ def _build_with_xbps_src(pkgname: str) -> int:
         priv = []
     if not (cfg.masterdir / "etc").is_dir():
         print("[build] binary-bootstrap…", file=sys.stderr)
-        subprocess.run(priv + ["./xbps-src", "binary-bootstrap"], cwd=vp, check=True)
-    # 3. compilar (-f fuerza re-ejecución de fases: sin esto, stamps
+        subprocess.run(priv + ["./xbps-src", "binary-bootstrap"], cwd=vp,
+                       check=True, timeout=cfg.build_timeout)
+    # 3. limpiar estado stale: dobuild.sh toca el stamp *_build_done ANTES de
+    #    instalar, así que un fallo posterior (pkglint) lo deja puesto y TODOS
+    #    los retries siguientes se saltan fetch/extract/install en silencio
+    #    (incluso con -f, que solo re-ejecuta el target 'build').
+    subprocess.run(priv + ["./xbps-src", "clean", pkgname], cwd=vp,
+                   capture_output=True, timeout=600)
+    # 4. compilar (-f fuerza re-ejecución de fases: sin esto, stamps
     #    *_install_done de intentos previos saltan do_install silenciosamente)
     r = subprocess.run(
-        priv + ["./xbps-src", "-f", "-A", cfg.arch, "pkg", pkgname], cwd=vp)
+        priv + ["./xbps-src", "-f", "-A", cfg.arch, "pkg", pkgname], cwd=vp,
+        timeout=cfg.build_timeout)
     if r.returncode != 0:
         _die(f"xbps-src pkg {pkgname} falló ({r.returncode})", r.returncode or 5)
     binpkgs = vp / "hostdir" / "binpkgs"
@@ -237,7 +245,7 @@ def _build_with_nix(pkgname: str) -> int:
     cfg = get_config()
     out_dir = cfg.derivations_dir / pkgname
     transpile(pr.srcinfo, out_dir)
-    ok, msg = build_with_hash_fix(out_dir, pkgname)
+    ok, msg = build_with_hash_fix(out_dir, pkgname, timeout=max(cfg.build_timeout, 1800))
     if not ok:
         _die(f"nix build falló: {msg[:400]}", 6)
     pkg0 = next(iter(pr.srcinfo.packages.values()))

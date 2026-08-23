@@ -17,7 +17,9 @@ from src.common.paths import REPO_ROOT
 from src.common.config import get_config, nix_system
 from src.common.types import SrcInfo, SrcInfoPackage
 
-NIXOS_REF = "github:NixOS/nixpkgs/nixos-24.11"
+# rama con toolchains actuales (go 1.26, rust nuevo): yay/paru exigen go>=1.26.
+# El flake.lock fija el rev → determinismo por paquete intacto.
+NIXOS_REF = "github:NixOS/nixpkgs/nixos-unstable"
 
 FLAKE_TEMPLATE = """# Generado por aur2xbps — NO editar a mano
 {restricted_header}{{
@@ -70,6 +72,30 @@ DERIVATION_BIN = '''
               find . -maxdepth 3 -type f -name "*.so*" -exec sh -c \\
                 'file "$1" | grep -q "ELF" && cp "$1" $out/lib/' _ {{}} \\; 2>/dev/null || true
             fi
+            # H-3.1: symlinks absolutos preservados del upstream apuntan al
+            # filesystem del host (ej. /etc/shadow) o quedan rotos bajo $out.
+            # Relativizarlos a la jerarquía contenida; irrecuperables → fuera.
+            find "$out" -type l | while IFS= read -r _l; do
+              _t=$(readlink "$_l")
+              case "$_t" in
+                /*)
+                  _cand="$out$_t"
+                  if [ -e "$_cand" ]; then
+                    _rel=$(realpath --relative-to "$(dirname "$_l")" "$_cand")
+                    ln -sfn "$_rel" "$_l"
+                  else
+                    echo "aur2xbps: symlink absoluto roto eliminado: $_l -> $_t"
+                    rm -f "$_l"
+                  fi
+                  ;;
+                *)
+                  if [ ! -e "$_l" ]; then
+                    echo "aur2xbps: symlink relativo roto eliminado: $_l -> $_t"
+                    rm -f "$_l"
+                  fi
+                  ;;
+              esac
+            done
             find $out -exec touch -h -d @0 {{}} +
           '';
           # Sin patchelf en sandbox: los binarios quedan PRISTINOS desde upstream.
@@ -94,7 +120,7 @@ DERIVATION_SOURCE = '''
           nativeBuildInputs = with pkgs; [ {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
           makeFlags = [ "PREFIX=$(out)" ];
-          meta = with pkgs.lib; {{
+{install_guard}          meta = with pkgs.lib; {{
             description = "{pkgdesc}";
             platforms = [ "{nix_system}" ];
           }};
@@ -106,6 +132,9 @@ ARCH_TO_NIX = {
     # base / toolchain
     "glibc": "glibc", "gcc-libs": "gcc-unwrapped.lib", "libgcc": "gcc-unwrapped.lib",
     "libstdc++": "gcc-unwrapped.lib", "filesystem": "filesystem",
+    "go": "go", "gcc-go": "gccgo",
+    # libalpm vive en pacman (nixpkgs); Arch la separa
+    "libalpm": "pacman", "pacman": "pacman",
     # GUI core
     "gtk3": "gtk3", "gtk+3": "gtk3", "gtk4": "gtk4", "qt5-base": "qt5.qtbase",
     "qt6-base": "qt6.qtbase", "pango": "pango", "cairo": "cairo",
@@ -215,6 +244,12 @@ def map_deps_to_nix(deps: List[str], strict: bool = False) -> str:
     names = []
     for d in deps:
         raw = re.split(r"[<>=]", d)[0].strip()
+        # Soname deps estilo Arch (libalpm.so>13, libcurl.so.4): el sufijo
+        # .so* jamás es un attr de nixpkgs → normalizar al nombre base ANTES
+        # de mapear (paru: buildInputs=[libalpm.so] reventaba la evaluación).
+        raw = re.sub(r"\.so.*$", "", raw)
+        if not raw or "." in raw:
+            continue
         mapped = _map_one(raw, strict=strict)
         if mapped:
             names.append(mapped)
@@ -303,6 +338,13 @@ def detect_ecosystem(pkg: SrcInfoPackage) -> str:
     base = pkg.pkgbase.lower()
     if any(name.startswith(s) or base == s for s in ("dwm", "st", "slstatus", "sent", "slock")):
         return "suckless"
+    # ecosistemas con fetch de dependencias propio: requieren builders
+    # dedicados con hash de vendor (paru=Rust, yay=Go)
+    md_names = [re.split(r"[<>=]", d)[0].strip() for d in pkg.makedepends_for()]
+    if any(x in ("cargo", "rust", "rustup") for x in md_names) or "cargo" in name:
+        return "cargo"
+    if any(x in ("go", "gcc-go", "go-pie") for x in md_names):
+        return "go"
     if "meson" in md:
         return "meson"
     if "cmake" in md:
@@ -510,6 +552,51 @@ DERIV_PYTHON_SOURCE_ONLY = """
         }};
 """
 
+DERIV_CARGO = """
+        "{pkgname}" = pkgs.rustPlatform.buildRustPackage rec {{
+          pname = "{pkgname}";
+          version = "{pkgver}";
+          src = pkgs.fetchurl {{
+            url = "{url}";
+            {hash_attr} = "{hash_val}";
+          }};
+          nativeBuildInputs = with pkgs; [ pkg-config file {native_inputs} ];
+          buildInputs = with pkgs; [ {build_inputs} ];
+          dontStrip = true;
+          # vendor placeholder → build_with_hash_fix lo sustituye por el
+          # sha256 real que Nix reporta en el error del FOD. Attr correcto
+          # según nixpkgs 24.11: cargoHash (vendorHash es de buildGoModule).
+          cargoHash = "{hash_vendor}";
+          meta = with pkgs.lib; {{
+            description = "{pkgdesc}";
+            platforms = [ "{nix_system}" ];
+          }};
+        }}
+""".rstrip(" ") + ";"
+
+
+DERIV_GO = """
+        "{pkgname}" = pkgs.buildGoModule rec {{
+          pname = "{pkgname}";
+          version = "{pkgver}";
+          src = pkgs.fetchurl {{
+            url = "{url}";
+            {hash_attr} = "{hash_val}";
+          }};
+          nativeBuildInputs = with pkgs; [ file {native_inputs} ];
+          buildInputs = with pkgs; [ {build_inputs} ];
+          doCheck = false;
+          ldflags = [ "-s -w" ];
+          # vendor placeholder → auto-corregido en build (ver HASH_DUMMY)
+          vendorHash = "{hash_vendor}";
+          meta = with pkgs.lib; {{
+            description = "{pkgdesc}";
+            platforms = [ "{nix_system}" ];
+          }};
+        }}
+""".rstrip(" ") + ";"
+
+
 ECOSYSTEM_TEMPLATES = {
     "python-pep517": DERIV_PYTHON_SOURCE_ONLY,
     "python-legacy": DERIV_PYTHON_SOURCE_ONLY,
@@ -517,8 +604,42 @@ ECOSYSTEM_TEMPLATES = {
     "meson":         DERIV_MESON,
     "autotools":     DERIV_AUTOTOOLS,
     "suckless":      DERIV_SUCKLESS,
+    "cargo":         DERIV_CARGO,
+    "go":            DERIV_GO,
 }
 SUPPORTED_ECOSYSTEMS = set(ECOSYSTEM_TEMPLATES) | {"python-pep517"}
+
+# Placeholder canónico de hash pendiente: build_with_hash_fix lo sustituye
+# globalmente con el hash real que Nix reporta en el error (fetchurl, fetchgit
+# y vendorHash/cargoVendorHash de FODs).
+HASH_DUMMY = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+# Guard universal anti-paquete-fantasma: si el Makefile del upstream instala
+# en silencio a /usr (que en sandbox falla o no-op), el $out queda VACÍO y el
+# pipeline empaqueta un .xbps sin ficheros. Esta fase garantiza binarios en
+# $out/bin o aborta con error claro.
+INSTALL_GUARD_PHASE = """
+          installPhase = ''
+            runHook preInstall
+            if [ -f Makefile ]; then
+              make PREFIX=$out DESTDIR= install || true
+            fi
+            mkdir -p $out/bin
+            find . -maxdepth 2 -type f ! -name Makefile | while read -r _f; do
+              case "$(file -b "$_f")" in
+                *ELF*|*script*|*text*executable*)
+                  [ -x "$_f" ] && install -Dm755 "$_f" "$out/bin/$(basename "$_f")"
+                  ;;
+              esac
+            done
+            if [ -z "$(ls -A $out/bin 2>/dev/null)" ] \\
+               && [ -z "$(ls -A $out 2>/dev/null | grep -v '^bin$')" ]; then
+              echo "aur2xbps: ERROR instalacion vacia (paquete fantasma)"
+              exit 1
+            fi
+            runHook postInstall
+          '';
+"""
 
 
 DERIV_VCS_ECO = """
@@ -619,7 +740,7 @@ DERIVATION_VCS = '''
           nativeBuildInputs = with pkgs; [ {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
           makeFlags = [ "PREFIX=$(out)" ];
-          meta = with pkgs.lib; {{
+{install_guard}          meta = with pkgs.lib; {{
             description = "{pkgdesc} (VCS pinneado a {rev_short})";
             platforms = [ "{nix_system}" ];
           }};
@@ -727,6 +848,9 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
                                  + str(any(x in md_names for x in
                                            ("automake", "autoconf", "libtool"))).lower()
                                  + ";")
+                # anti-fantasma: VCS sin fases propias dejaba $out vacío
+                # (neofetch empaquetaba 531B sin binarios)
+                eco_body_fmt += INSTALL_GUARD_PHASE
             eco_body = eco_body_fmt.format(
                 native_inputs=native_inputs, build_inputs=build_inputs or "glibc")
             drv = DERIV_VCS_ECO.format(
@@ -758,6 +882,8 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
             url=url,
             hash_attr=hash_attr,
             hash_val=hash_val,
+            hash_vendor=HASH_DUMMY,
+            install_guard="",
             build_inputs=build_inputs_str,
             native_inputs=native_inputs,
             pkgdesc=pkgdesc,
@@ -812,6 +938,11 @@ def transpile(srcinfo: SrcInfo, out_dir: Path) -> Path:
 
 
 HASH_MISMATCH_RE = re.compile(r"got:\s+(sha256-[A-Za-z0-9+/=]+)")
+# FOD mismatch completo: permite sustituir el hash ESPECIFICADO por el real
+# en cualquier posición del flake (fetchurl, fetchgit, vendorHash…)
+SPECIFIED_GOT_RE = re.compile(
+    r"specified:\s+(sha256-[A-Za-z0-9+/=]+).*?got:\s+(sha256-[A-Za-z0-9+/=]+)",
+    re.DOTALL)
 
 
 def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 2,
@@ -821,12 +952,18 @@ def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 2,
     out_dir = Path(out_dir)
     flake = out_dir / "flake.nix"
     last_err = ""
+    # Sistema del attr derivado de la arch configurada (T-3: nunca hardcodear
+    # x86_64-linux; un override AUR2XBPS_ARCH sin esto era ignorado al compilar)
+    system = nix_system(get_config().arch)
     for attempt in range(max_retries + 1):
-        r = subprocess.run(
-            ["nix", "build", f".#packages.x86_64-linux.{attr}",
-             "--extra-experimental-features", "nix-command flakes",
-             "--option", "sandbox", "true"],
-            cwd=out_dir, capture_output=True, text=True, timeout=timeout)
+        try:
+            r = subprocess.run(
+                ["nix", "build", f".#packages.{system}.{attr}",
+                 "--extra-experimental-features", "nix-command flakes",
+                 "--option", "sandbox", "true"],
+                cwd=out_dir, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False, f"nix build excedió {timeout}s (intento {attempt + 1})"
         if r.returncode == 0:
             return True, "build OK"
         combined = r.stdout + r.stderr
@@ -835,20 +972,25 @@ def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 2,
             return False, (combined[-2000:] or "error desconocido")
         got = m.group(1)
         content = flake.read_text()
-        # Reemplazar el hash del fetchurl. Casos: (a) dummy SKIP → asignación
-        # específica; (b) hash real de .SRCINFO que no coincide con upstream
-        # actual → sustituir el valor existente. Solo si hay UN fetchurl
-        # (derivaciones multi-fuente requieren parche manual por entrada).
-        n_fetch = content.count("pkgs.fetchurl")
-        if 'fetchgit' in content:
-            pat = r'(?:sha256|hash) = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="'
-            repl = f'hash = "{got}"'
-        elif n_fetch == 1:
-            pat = r'(sha256|sha512|hash) = "[A-Za-z0-9+/=-]+"'
-            repl = f'sha256 = "{got}"'
+        # (a) placeholder canónico (fetchgit/fetchurl/vendorHash de cargo/go):
+        #     sustitución global — cada placeholder espera SU hash real y Nix
+        #     solo reporta el primer FOD fallido por intento
+        if HASH_DUMMY in content:
+            content_new = content.replace(HASH_DUMMY, got)
         else:
-            return False, f"multi-fetchurl ({n_fetch}): parche de hash requiere manual"
-        content_new = re.sub(pat, repl, content, count=1)
+            # (b) hash especificado ≠ real: sustituir TODAS las ocurrencias
+            #     del especificado por el reportado (vendor único en la práctica)
+            sg = SPECIFIED_GOT_RE.search(combined)
+            if sg and sg.group(1) in content:
+                content_new = content.replace(sg.group(1), sg.group(2))
+                got = sg.group(2)
+            else:
+                # (c) legado: un solo fetchurl → reescribir su hash
+                n_fetch = content.count("pkgs.fetchurl")
+                if n_fetch != 1:
+                    return False, f"multi-fetchurl ({n_fetch}): parche manual"
+                pat = r'(sha256|sha512|hash) = "[A-Za-z0-9+/=-]+"'
+                content_new = re.sub(pat, f'sha256 = "{got}"', content, count=1)
         if content_new == content:
             return False, f"no se pudo parchear hash {got}"
         flake.write_text(content_new)

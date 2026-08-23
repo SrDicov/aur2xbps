@@ -52,8 +52,20 @@ MANUAL: dict[str, str | None] = {
     "ffmpeg": "ffmpeg-devel", "libpng": "libpng-devel",
     "libjpeg-turbo": "libjpeg-turbo-devel", "giflib": "giflib-devel",
     "expat": "expat-devel", "libuv": "libuv-devel",
-    "libxss": "libXScrnSaver-devel", "libcups": "libcups-devel",
-    "nss": "nss", "ttf-liberation": "ttf-liberation",
+    "libxss": "libXScrnSaver-devel", "libcups": "cups-devel",
+    "nss": "nss",
+    "ttf-liberation": "liberation-fonts-ttf",
+    "ttf-font": "fontconfig",
+    "ttf-nerd-fonts-symbols": "nerd-fonts-symbols-ttf",
+    "gcc-libs": "libstdc++",
+    "libcurl-gnutls": "libcurl",  # Void solo trae curl OpenSSL; el generador crea el shim .so junto a la app
+    "libsm": "libSM",
+    # sin equivalente en Void: metadatos LSB, ninguna app los necesita en runtime
+    "lsb-release": None,
+    # systemd no existe en Void (runit+eudev); los Electron la cargan por
+    # dlopen de forma opcional → descartar (si una app la exige, fallará
+    # en el smoke con "libsystemd" y se añadirá shim específico)
+    "systemd-libs": None,
     "xdg-utils": "xdg-utils", "libxt": "libXt-devel",
     "libxcomposite": "libXcomposite-devel", "libxdamage": "libXdamage-devel",
     "libxfixes": "libXfixes-devel", "libxxf86vm": "libXxf86vm-devel",

@@ -62,7 +62,8 @@ class ShlibsDB:
         """rsync o pull submódulo"""
         vp = Path(void_packages_dir) if void_packages_dir else DEFAULT_SHLIBS.parent.parent
         if (vp / ".git").exists():
-            subprocess.run(["git", "-C", str(vp), "pull", "--ff-only"], check=False)
+            subprocess.run(["git", "-C", str(vp), "pull", "--ff-only"],
+                           check=False, timeout=30)
         # Si AxX tiene common/shlibs como submodule, actualizar puntero
         self._load()
 
@@ -78,7 +79,7 @@ class ShlibsDB:
                 # 0x0000000000000001 (NEEDED) Shared library: [libtinfo.so.6]
                 if "[" in line:
                     soname = line.split("[")[1].split("]")[0]
-                    mapped = self.lookup(soname)
+                    mapped = self.soname_to_dep(soname)
                     if mapped:
                         deps.append(mapped)
         return sorted(set(deps))

@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Filtro refinado Atomic Arch — AGENTS.md Gotchas.
 
-Bloquea solo paquetes maliciosos exactos y npm/bun install sin hash,
-mantiene allowlist para proyectos JS legítimos. Aborta antes de contenedor.
+Bloquea paquetes maliciosos exactos y la instalación de dependencias JS
+(npm/bun/yarn/pnpm/deno) sin hash verificable. Exenciones SOLO con cadena
+de custodia PGP ([security] trusted_pgp_keys) o allowlist deprecada.
+Aborta antes de contenedor.
 """
 from __future__ import annotations
 import re
@@ -29,10 +31,20 @@ JS_ALLOWLIST: Set[str] = {
 }
 
 # Patrones que indican instalación sin hash (vector)
-# Detección: makedepends/depends contiene `npm`/`bun` + PKGBUILD implicaría `npm install` sin fetcher hash
-# En .SRCINFO solo vemos depends; correlacionamos con nombres sospechosos
-NPM_BUN_WITHOUT_HASH_RE = re.compile(r"\b(npm|bun)\s+install\b", re.IGNORECASE)
-# También dependencias bare `npm`/`nodejs` sin versión pinned pueden ser señal pero no bloqueamos por sí solas
+# Detección: PKGBUILD (texto crudo, NUNCA ejecutado) invoca gestores JS.
+# H-2.1: cobertura ampliada — yarn/pnpm/deno/bower, formas abreviadas
+# (`npm i`, `yarn ci`) y heurística básica de ofuscación (${N}${M} install).
+JS_INSTALL_RE = re.compile(
+    r"\b(npm|bun|yarn|pnpm|deno|bower)\s+(install|i|add|ci)\b"
+    r"|\$\{[A-Za-z_][A-Za-z0-9_]*\}\s+(install|add)\b"
+    r"|\b(npm|pnpm|bunx?|deno)\s+(run|exec|dlx)\s+\S+https?://",
+    re.IGNORECASE)
+# Alias de compatibilidad: mismo comportamiento ampliado
+NPM_BUN_WITHOUT_HASH_RE = JS_INSTALL_RE
+# Señal (no bloqueo): dependencia del ecosistema Node en depends/makedepends
+NODE_ECOSYSTEM_DEPS = {"nodejs", "npm", "yarn", "pnpm", "deno", "bower"}
+
+_allowlist_deprecation_warned = False
 
 def _extract_dep_names(deps: List[str]) -> Set[str]:
     names = set()
@@ -62,15 +74,43 @@ def contains_malicious_dep(srcinfo: SrcInfo) -> List[str]:
                 hits.append(f"{pname}: depende de paquete malicioso exacto '{mal}'")
     return hits
 
-def is_js_legitimate(pkgbase: str) -> bool:
-    return pkgbase.lower() in JS_ALLOWLIST
+def is_js_legitimate(pkgbase: str, srcinfo: SrcInfo | None = None) -> bool:
+    """Exención del filtro npm-sin-hash.
+
+    Cadena de custodia preferente (H-2.2): el .SRCINFO declara validpgpkeys
+    Y al menos una coincide con [security] trusted_pgp_keys de la config →
+    el paquete está firmado por un mantenedor de confianza local.
+
+    La allowlist hardcodeada está DEPRECADA: sigue funcionando para no romper
+    flujos existentes pero emite warning; migrar a trusted_pgp_keys."""
+    global _allowlist_deprecation_warned
+    declared_keys = [k.strip().upper()
+                     for p in (srcinfo.packages.values() if srcinfo else [])
+                     for k in (p.validpgpkeys or [])]
+    if srcinfo is not None and declared_keys:
+        from src.common.config import get_config
+        trusted = {k.strip().upper() for k in get_config().trusted_pgp_keys}
+        if trusted and any(k in trusted for k in declared_keys):
+            return True
+    if pkgbase.lower() in JS_ALLOWLIST:
+        if not _allowlist_deprecation_warned:
+            import logging
+            logging.getLogger(__name__).warning(
+                "JS_ALLOWLIST hardcodeada deprecada (riesgo de secuestro de "
+                "mantenedor); migra a [security] trusted_pgp_keys")
+            _allowlist_deprecation_warned = True
+        return True
+    return False
+
 
 def check_atomic_arch(srcinfo: SrcInfo, raw_pkgbuild_text: str | None = None) -> tuple[bool, List[str]]:
     """
     Retorna (bloquear, razones). False = pasa.
     Lógica refinada:
     - Bloquear si depende exactamente de atomic-lockfile/js-digest/lockfile-js
-    - Bloquear si contiene npm install / bun install sin evidencia de hash/pinning (solo si no está en allowlist)
+    - Bloquear si el texto del PKGBUILD instala deps JS (npm/bun/yarn/pnpm/
+      deno/bower, incl. formas abreviadas/ofuscadas) sin evidencia de hash,
+      salvo cadena de custodia PGP o allowlist deprecada
     - No bloquear todo npm/bun genérico
     """
     reasons: List[str] = []
@@ -78,31 +118,45 @@ def check_atomic_arch(srcinfo: SrcInfo, raw_pkgbuild_text: str | None = None) ->
     # 1. Exact malicious dep
     reasons.extend(contains_malicious_dep(srcinfo))
 
-    # 2. Chequeo raw PKGBUILD si provisto (solo para auditoría, no para evaluar)
-    if raw_pkgbuild_text:
-        if NPM_BUN_WITHOUT_HASH_RE.search(raw_pkgbuild_text):
-            # Verificar si hay hash asociado: buscar sha256sums no SKIP en .SRCINFO
-            has_hash = any(
-                s != "SKIP" and len(s) >= 32
-                for pkg in srcinfo.packages.values()
-                for algo in pkg.sums.values()
-                # cualquier arch cualificada conocida + genérico
-                for vals in ([algo.get("", [])] + [a for k, a in algo.items() if k])
-                for s in vals
-            )
-            if not has_hash and not is_js_legitimate(srcinfo.pkgbase):
-                reasons.append(
-                    f"{srcinfo.pkgbase}: contiene `npm/bun install` sin hash SHA256 (vector Atomic Arch) y no está en allowlist"
-                )
-            elif not has_hash and is_js_legitimate(srcinfo.pkgbase):
-                # allowlist pasa pero log warning
-                pass
+    # 1b. Señal ecosistema Node SIN hash en fuentes (visible, no bloqueante):
+    #     el sandbox Nix (TIAR) es la contención real si llega a compilar.
+    if raw_pkgbuild_text and JS_INSTALL_RE.search(raw_pkgbuild_text):
+        has_hash = _has_real_hash(srcinfo)
+        if not has_hash:
+            node_dep = any(
+                _extract_dep_names(pkg.depends_for() + pkg.makedepends_for())
+                & NODE_ECOSYSTEM_DEPS
+                for pkg in srcinfo.packages.values())
+            if node_dep and not is_js_legitimate(srcinfo.pkgbase, srcinfo):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "%s: depende de Node sin hashes verificables — revisar "
+                    "antes de publicar", srcinfo.pkgbase)
 
-    # 3. Heurística: dependencia npm/bun suelta NO es bloqueo si está en allowlist o si hay -bin legítimo
-    # (no añadimos bloqueo genérico aquí)
+    # 2. Chequeo raw PKGBUILD si provisto (texto estático; jamás se ejecuta)
+    if raw_pkgbuild_text:
+        if JS_INSTALL_RE.search(raw_pkgbuild_text):
+            has_hash = _has_real_hash(srcinfo)
+            if not has_hash and not is_js_legitimate(srcinfo.pkgbase, srcinfo):
+                reasons.append(
+                    f"{srcinfo.pkgbase}: instala deps JS (npm/bun/yarn/pnpm/"
+                    f"deno) sin hash SHA256 (vector Atomic Arch) y sin "
+                    f"mantenedor PGP de confianza")
 
     block = len(reasons) > 0
     return block, reasons
+
+
+def _has_real_hash(srcinfo: SrcInfo) -> bool:
+    """¿Existe alguna suma real (no SKIP, longitud plausible) en el .SRCINFO?"""
+    return any(
+        s != "SKIP" and len(s) >= 32
+        for pkg in srcinfo.packages.values()
+        for algo in pkg.sums.values()
+        # cualquier arch cualificada conocida + genérico
+        for vals in ([algo.get("", [])] + [a for k, a in algo.items() if k])
+        for s in vals
+    )
 
 def is_restricted(srcinfo) -> tuple[bool, str]:
     """Retorna (restringido, razón). Un paquete restringido tiene licencia

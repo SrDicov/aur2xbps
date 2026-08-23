@@ -7,6 +7,7 @@ Receta determinista TRH-validada en Fase 0:
 """
 from __future__ import annotations
 import hashlib
+import os
 import sys
 import subprocess
 from dataclasses import dataclass, field
@@ -55,7 +56,16 @@ class XbpsResult:
 
 
 def _run(cmd: List[str], timeout: int = 600, capture: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+    # Sin check=True: los llamadores inspeccionan returncode (fallbacks).
+    # Solo TimeoutExpired puede propagarse → scrub de argv con secretos (H-5.2).
+    try:
+        return subprocess.run(cmd, capture_output=capture, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        from src.xbps.builder import redact_cmd
+        if isinstance(getattr(e, "cmd", None), (list, tuple)):
+            e.cmd = redact_cmd(e.cmd)
+        raise
 
 
 def _void_python_version() -> str:
@@ -189,6 +199,22 @@ def _require_tools() -> None:
             + " (en Void: xbps-install -y file binutils patchelf)")
 
 
+def verify_patched_elf(path: str) -> None:
+    """Oráculo post-patchelf (H-4.1): patchelf con secciones no convencionales
+    puede corromper el ELF silenciosamente. ldd debe leer el binario sin
+    fallar; libs "not found" son tolerables (resuelven en el chroot Void vía
+    shlibs). Lanza RuntimeError ante corrupción o cuelgue."""
+    try:
+        subprocess.run(["ldd", path], capture_output=True, text=True,
+                       timeout=60, check=True)
+    except subprocess.CalledProcessError as e:
+        tail = ((e.stdout or "") + (e.stderr or ""))[-300:]
+        raise RuntimeError(
+            f"patchelf corrompió {path} (ldd exit {e.returncode}): {tail}") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"ldd colgado en {path}: ELF posiblemente corrupto") from e
+
+
 def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
     """Re-parchea ELFs del Nix store al intérprete/libras de Void.
     Orden mandatorio: rpath ($ORIGIN primero) ANTES que interpreter, separados."""
@@ -222,6 +248,9 @@ def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
         refs_nix = "/nix/store" in d_out
         if not interp_nix and not refs_nix:
             continue
+        # Guardar modo original: chmod +w es temporal, se restaura tras parchear
+        # (H-4.1: sin restauración, las libs quedaban 0644+w → drift en stage)
+        orig_mode = os.stat(f).st_mode & 0o777
         _run(["chmod", "+w", f])
         # 1) rpath primero
         _run(["patchelf", "--set-rpath", "$ORIGIN:/usr/lib:/usr/lib64", f])
@@ -231,6 +260,10 @@ def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
             # Normalización de modo: ELF ejecutable siempre 0755
             # (zips/tars upstream pueden perder el bit x; root lo enmascara vía DAC_OVERRIDE)
             _run(["chmod", "755", f])
+        else:
+            _run(["chmod", oct(orig_mode)[2:], f])
+        # 3) Oráculo post-escritura (H-4.1): detecta corrupción inmediata
+        verify_patched_elf(f)
         patched += 1
     return patched
 
@@ -362,6 +395,36 @@ def chroot_smoke(binary_candidates: List[str]) -> tuple[bool, int]:
     return False, -1
 
 
+def _stage_smoke_candidates(stage: Path, pkgname: str) -> List[str]:
+    """Candidatos de smoke DERIVADOS del stage real (nunca hardcodeados):
+    prioriza usr/bin/<pkgname>, luego <basename sin -bin>, luego ELFs
+    ejecutables, luego cualquier fichero. Máximo 4."""
+    bin_dir = stage / "usr" / "bin"
+    if not bin_dir.is_dir():
+        return [f"/usr/bin/{pkgname}"]
+    entries = sorted(p for p in bin_dir.iterdir()
+                     if p.is_file() or p.is_symlink())
+    if not entries:
+        return [f"/usr/bin/{pkgname}"]
+    base = pkgname.lower().removesuffix("-bin")
+
+    def is_exec(p: Path) -> bool:
+        try:
+            target = p.resolve()
+            with open(target, "rb") as fh:
+                head = fh.read(2)
+            return head == b"\x7fE" or head == b"#!"
+        except Exception:
+            return False
+
+    def prio(p: Path):
+        n = p.name.lower()
+        return (n != pkgname.lower(), n != base, not is_exec(p), n)
+
+    ordered = sorted(entries, key=prio)[:4]
+    return [f"/usr/bin/{p.name}" for p in ordered]
+
+
 def full_pipeline(nix_result: Path, pkgname: str, pkgver: str, desc: str,
                   smoke_binaries: Optional[List[str]] = None) -> XbpsResult:
     """Ejecuta la cadena completa para un paquete. Retorna resultado detallado."""
@@ -403,11 +466,9 @@ def full_pipeline(nix_result: Path, pkgname: str, pkgver: str, desc: str,
         res.errors.append("instalación en chroot falló")
         return res
 
-    # 7. Smoke EEL
-    candidates = smoke_binaries or [
-        f"/usr/bin/{pkgname}", f"/usr/share/{pkgname}/{pkgname}",
-        f"/opt/google/chrome/chrome", f"/usr/share/code/code",
-    ]
+    # 7. Smoke EEL — candidatos derivados del stage real; jamás rutas
+    #    hardcodeadas (los restos chrome/code provocaban fallos fantasma)
+    candidates = smoke_binaries or _stage_smoke_candidates(stage, pkgname)
     ok, missing = chroot_smoke(candidates)
     res.smoke_ok, res.ldd_missing = ok, max(missing, 0)
     if not ok:

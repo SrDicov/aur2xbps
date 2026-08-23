@@ -8,7 +8,7 @@ Bridge AUR (Arch) → Void Linux (XBPS) usando Nix como motor hermético. Pipeli
 ## Configuración de entorno
 - **Workspace** (cachés, fuentes, derivaciones, repo): variable `AUR2XBPS_ROOT` (default `~/.local/share/aur2xbps`; alternativamente archivo `~/.config/aur2xbps/root` con la ruta). Resolución centralizada en `src/common/paths.py` — NUNCA hardcodear rutas absolutas personales.
 - **Claves de firma**: FUERA del árbol, en `AUR2XBPS_KEYDIR` (default `/etc/xbps/keys/aur2xbps`). Nunca commitear `.pem`/`.key`/`.sig2`.
-- **Requisitos**: Python ≥3.11, Nix ≥2.35 (flakes + sandbox), xbps estáticos, patchelf, void-packages bootstrapeado (submódulo `common/void-packages`; fuente de `common/shlibs`). Guía operativa: `docs/USAGE.md`.
+- **Requisitos**: Python ≥3.11, Nix ≥2.35 (flakes + sandbox), xbps estáticos, patchelf, void-packages bootstrapeado (submódulo `common/void-packages`; fuente de `common/shlibs`). Elevador de privilegios: sudo o doas (Void) — override `AUR2XBPS_PRIV`; guía operativa: `docs/USAGE.md`.
 
 ## Código — entrypoints
 - `src/common/config.py` — configuración central (env AUR2XBPS_* > ~/.config/aur2xbps/config.toml > /etc/aur2xbps/config.toml > defaults XDG). Claves: data_dir/cache_dir/repo_dir/keys_dir/masterdir/void_packages_dir/host/port/arch/python_version/signing_key/log_level/restricted_mode/offline. `dynamic_linker()`/`nix_system()` para multi-arch.
@@ -53,13 +53,22 @@ python3 -m src.nix.patchelf             # linter de flakes generados (standalone
 ## Gotchas críticos
 - **dash = /bin/sh en Void**: POSIX estricto, SIN expansión de llaves `{a,b}` ni bashismos en scripts con shebang `#!/bin/sh`.
 - **xbps-install sin `-y`**: con stdin en EOF imprime `Aborting!` y retorna exit 0 → éxito falso. Siempre `-Sy`.
-- **Headers `-devel` son build-time**: en el chroot solo se instalan hostmakedepends/makedepends antes de compilar; las libs runtime las resuelve xbps vía shlibs. Nunca emitir `-devel` en `depends=`.
+- **Stamps de xbps-src**: dobuild toca `*_build_done` ANTES de instalar; un fallo posterior (pkglint) lo deja puesto y TODOS los retries saltan fetch/extract/install en silencio (incluso con `-f`, que solo re-ejecuta el target `build`). Siempre `./xbps-src clean <pkg>` antes de reintentar.
+- **`nostrip=yes`, NO `dontStrip=true`**: dontStrip es convención Nix; xbps-src la ignora y el hook strip corrompe/rechaza binarios upstream.
+- **`provides` exige revisión**: xbps 0.60 rechaza `foo-1.0` (los ejemplos de su propia help fallan); usar `foo-1.0_1`.
+- **`xbps-rindex -f -a`**: sin `-f` conserva silenciosamente la entrada previa si el pkgver ya estaba indexado → repodata stale tras re-empaquetar.
+- **Headers `-devel` son build-time**: en el chroot solo se instalan hostmakedepends/makedepends antes de compilar; las libs runtime las resuelve xbps vía shlibs. Nunca emitir `-devel` en `depends=`. Sin versión en makedepends ("template version is used always").
 - **pkg-config obligatorio al enlazar libs**: sin él los Makefiles caen a LDLIBS estilo Debian (`-ltinfo`) inexistentes en Void (tinfo va fusionado en libncursesw).
 - **patchelf orden mandatorio**: rpath primero, interpreter después, invocaciones separadas. Combinados → ELF corrupto. Linter falla si detecta ambos en misma línea. `chmod +w` antes/después (Nix store read-only).
 - **patchelf sobre binarios Go es destructivo**: saltarse ELFs que ya no referencian /nix/store (check readelf antes de parchear).
 - **strip de stdenv corrompe binarios Go/precompilados**: `dontStrip = true` en template BIN; **autoPatchelfHook corrompe binarios Go** — no usarlo.
 - **`.SRCINFO` stale**: validar tag git vs pkgver; abortar si diverge.
 - **AUR RPC v5**: URI ≤4443 bytes, batch ≤200, rate 4000/día/IP. Cache SQLite + offline mode.
+- **RPC nunca cachea 0-resultados**: un paquete borrado/parpadeo de AUR quedaría "no existe" para siempre en caché (caso yazi-bin). GC purga entradas envenenadas previas.
+- **Sonames Arch no existen en nixpkgs**: `libalpm.so>13` → normalizar sufijo `.so*` ANTES de mapear (attr real: `pacman`). Sin esto la evaluación del flake revienta.
+- **Ecosistemas cargo/go**: `buildRustPackage` usa `cargoHash` (vendorHash es de buildGoModule); placeholder `HASH_DUMMY` auto-corregido con el hash que Nix reporta del FOD. Pin `nixos-unstable` (go≥1.26, rust nuevo) — el flake.lock fija el rev.
+- **Smoke sin hardcodear**: candidatos derivados del stage real (`_stage_smoke_candidates`) — rutas fijas (`/opt/google/chrome/chrome`) provocaban fallos fantasma.
+- **Paquete fantasma**: Makefiles que instalan a /usr en silencio dejan `$out` VACÍO (.xbps de ~500B). INSTALL_GUARD_PHASE aborta si no hay binarios.
 - **Atomic Arch**: bloquear solo maliciosos exactos + npm/bun install sin hash (salvo allowlist JS). No bloquear todo npm/bun.
 - **buildFHSEnv**: solo `-bin`. PKG_CONFIG_PATH rompe aislamiento.
 - **TRH cross-host**: libarchive escribe uname/gname como STRING cuando getpwuid resuelve → hash varía entre hosts. `determinize_xbps()` obligatorio.
@@ -72,6 +81,8 @@ python3 -m src.nix.patchelf             # linter de flakes generados (standalone
 - **Python cross-versión**: wheel con python sandbox ≠ python destino. Usar `build_python_in_void()` (python3 del masterdir Void).
 - **dpkg-deb en zip**: `case "$src" in *.deb)... *.zip) unzip...` en unpackPhase.
 - **`file` command**: necesario en nativeBuildInputs para detección ELF.
+- **Secretos en argv**: comandos con `--privkey`/`--sign-key` SIEMPRE vía `builder._run` (redacta en logs/excepciones); nunca `subprocess.run` directo ni print del cmd crudo.
+- **Smoke de paquetes**: extraer el `.xbps` a tmp y ejecutar resolviendo symlinks (`/usr/bin/x → ../lib/app/x` es patrón habitual post-reubicación); LD_LIBRARY_PATH al lib propio del paquete.
 
 ## Flujo operativo (CLI)
 ```bash
@@ -88,6 +99,7 @@ aur2xbps repo --sign
 3. **Empaquetar**: `full_pipeline(...)` → stage → patchelf selectivo → shlibs auto → create_signed → chroot → smoke.
 4. **Lote**: `python3 scripts/batch-validate.py [pkg...]` — registra `<workspace>/batch-results.json`.
 5. **VCS refresh**: `./scripts/vcs-refresh.sh [--offline|--force|--submodules]`.
+6. **Lote masivo**: `python3 scripts/mass-validate.py [--count-bin N --count-src M] [--engine both|nix|xbps-src] [--seed S]` — muestreo reproducible desde packages.gz, smoke funcional extrayendo el .xbps (resuelve symlinks `/usr/bin→../lib`), reanudable vía `mass-results.json`, reporte markdown con causas raíz agrupadas.
 
 ## Convenciones repo
 - **Rutas**: SIEMPRE vía `src/common/config.py` (Python) o `${AUR2XBPS_*}` en bash. Prohibido rutas absolutas personales, usuarios fijos, IPs o puertos en código.

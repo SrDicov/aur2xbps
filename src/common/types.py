@@ -121,6 +121,7 @@ class SrcInfo:
     pkgbase: str
     base_values: Dict[str, List[str]] = field(default_factory=dict)
     packages: Dict[str, SrcInfoPackage] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)   # H-1.2: claves/valores sospechosos tolerados
 
 
 @dataclass
