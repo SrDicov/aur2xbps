@@ -110,9 +110,14 @@ def fusionar_resultados(raw: Path) -> tuple[dict[str, dict], list[dict]]:
                 if previa is None:
                     fusion[pkg] = nueva
                 else:
+                    # mitades nix/xbps-src del mismo shard: unir motores
+                    previa.setdefault("engines", {}).update(
+                        nueva.get("engines", {}))
                     for s in shards:
                         if s not in previa["shards"]:
                             previa["shards"].append(s)
+                    previa["ok"] = bool(previa["engines"]) and all(
+                        e.get("ok") for e in previa["engines"].values())
     return fusion, bloqueados_extra
 
 

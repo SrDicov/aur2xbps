@@ -1,6 +1,8 @@
 # Campaña masiva: muestreo reproducible del AUR → build dual (nix + xbps-src)
-# en shards paralelos; cada shard sube sus resultados y un job final fusiona
-# el reporte. Sin secretos: clave RSA efímera por runner.
+# en shards paralelos. El motor nix corre en Ubuntu; el motor xbps-src corre
+# en un contenedor Void nativo (los tools del masterdir no arrancan sobre
+# la glibc vieja del runner). Cada mitad sube sus resultados y un job final
+# fusiona por-motor. Sin secretos: clave RSA efímera por runner.
 name: aur2xbps campaign
 
 on:
@@ -12,7 +14,7 @@ on:
         required: false
         default: ""
       count:
-        description: "Total de paquetes a muestrear (mitad -bin, mitad fuente)"
+        description: "Total de paquetes a muestrear"
         type: string
         required: false
         default: "100"
@@ -96,9 +98,10 @@ jobs:
             echo "| only | \`${ONLY_IN:-(vacío)}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  build:
-    name: Shard ${{ matrix.shard }}
+  build-nix:
+    name: Shard ${{ matrix.shard }} · nix
     needs: plan
+    if: inputs.engines != 'xbps-src'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -108,9 +111,7 @@ jobs:
         shard: ${{ fromJSON(needs.plan.outputs.shards-list) }}
     env:
       AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
-      AUR2XBPS_LOGS: /tmp/aur2xbps-logs
-      AUR2XBPS_VOID_DIR: ${{ github.workspace }}/common/void-packages
-      AUR2XBPS_MASTERDIR: ${{ github.workspace }}/common/void-packages/masterdir-x86_64
+      AUR2XBPS_LOGS: /tmp/aur2xbps-logs-nix
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,8 +125,7 @@ jobs:
         run: |
           pip install httpx pyyaml
           mkdir -p "$AUR2XBPS_ROOT/cache" "$AUR2XBPS_ROOT/sources" \
-                   "$AUR2XBPS_ROOT/repo" "$AUR2XBPS_ROOT/keys" \
-                   "$AUR2XBPS_LOGS" "$AUR2XBPS_MASTERDIR"
+                   "$AUR2XBPS_ROOT/repo" "$AUR2XBPS_ROOT/keys" "$AUR2XBPS_LOGS"
           openssl genrsa -out "$AUR2XBPS_ROOT/keys/privkey.pem" 4096
           chmod 600 "$AUR2XBPS_ROOT/keys/privkey.pem"
 
@@ -135,92 +135,37 @@ jobs:
             experimental-features = nix-command flakes
             sandbox = true
 
-      - name: xbps tools actuales vía rootfs musl + shims ld-musl
+      - name: Tools xbps para empaquetado (rootfs musl + shims ld-musl)
         run: |
-          # El mirror /static está congelado en 0.59 (< mínimo de
-          # void-packages HEAD) y pkgsStatic.xbps no compila (bug upstream).
-          # El ROOTFS musl trae tools 0.60.x completos; los binarios musl
-          # corren sobre Ubuntu vía su propio loader. SOLO afecta a las
-          # herramientas de empaquetado: los .xbps siguen siendo glibc.
+          # Solo para create/rindex/sign del pipeline: el mirror /static está
+          # congelado en 0.59, así que se usan los tools actuales del ROOTFS
+          # musl vía su propio loader. Los .xbps siguen siendo glibc.
           IDX=https://repo-default.voidlinux.org/live/current/
           FILE=$(curl -sS "$IDX" | grep -oE 'void-x86_64-musl-ROOTFS-[0-9]+\.tar\.xz' | sort -V | tail -1)
-          echo "rootfs: $FILE"
           mkdir -p /opt/voidrootfs
           curl -fsSL "$IDX$FILE" | tar -xJ -C /opt/voidrootfs
           test -x /opt/voidrootfs/usr/bin/xbps-create
-          echo "=== DIAG rootfs ==="
-          file /opt/voidrootfs/usr/bin/xbps-uhelper || true
-          ( readelf -d /opt/voidrootfs/usr/bin/xbps-uhelper 2>/dev/null || true ) | grep -E "NEEDED|RPATH" || true
-          ls /opt/voidrootfs/usr/lib | grep -iE "xbps|libc\.|musl" || echo "(usr/lib sin xbps/libc)"
-          find /opt/voidrootfs -name "*xbps*" -not -path "*/var/*" | head -15
-          echo "=== FIN DIAG ==="
-          # Diagnóstico del layout de musl en el tarball
-          ls -la /opt/voidrootfs/usr/lib/ | grep -iE "musl|libc" || true
-          # Resolver loader musl REAL: symlink puede colgar tras extraer
           LOADER=""
-          LD_CAND="/opt/voidrootfs/usr/lib/ld-musl-x86_64.so.1"
-          TGT=$(readlink "$LD_CAND" 2>/dev/null || true)
-          for c in "$LD_CAND" \
-                   "${LD_CAND%/*}/${TGT:-}" \
-                   "/opt/voidrootfs/usr/lib/libc.so" \
-                   "/opt/voidrootfs/lib/libc.so" \
-                   $(find /opt/voidrootfs/usr/lib /opt/voidrootfs/lib \
-                          -maxdepth 1 -name 'libc.so*' -o -name 'ld-musl*' 2>/dev/null); do
-            [ -n "$c" ] || continue
-            [ -f "$c" ] || continue
-            chmod +x "$c" 2>/dev/null || true
-            if [ -x "$c" ] && [ -s "$c" ]; then LOADER="$c"; break; fi
+          for c in /opt/voidrootfs/usr/lib/libc.so /opt/voidrootfs/lib/libc.so \
+                   /opt/voidrootfs/usr/lib/ld-musl-x86_64.so.1; do
+            r=$(readlink -f "$c" 2>/dev/null || true)
+            if [ -n "$r" ] && [ -f "$r" ]; then chmod +x "$r"; LOADER="$r"; break; fi
           done
-          if [ -z "$LOADER" ]; then
-            echo "::error::sin loader musl utilizable"
-            exit 1
-          fi
-          echo "loader musl: $LOADER ($(stat -c '%F %s bytes' "$LOADER"))"
+          test -n "$LOADER"
           LIBDIR=$(dirname "$LOADER")
-          # Localizar donde quedó realmente libxbps.so.6 en el rootfs
-          LIBXBPSDIR=$(dirname "$(find /opt/voidrootfs -name 'libxbps.so.6*' | head -1)")
+          LIBXBPSDIR=$(dirname "$(find /opt/voidrootfs -name 'libxbps.so.*' | head -1)")
           test -n "$LIBXBPSDIR"
-          echo "libxbps en: $LIBXBPSDIR"
-          ls -la "$LIBXBPSDIR"/libxbps* || true
           mkdir -p /opt/xbps-bin
           for b in /opt/voidrootfs/usr/bin/xbps-*; do
             n=$(basename "$b")
-            printf '#!/bin/sh\nLD_LIBRARY_PATH=%s:%s\nexport LD_LIBRARY_PATH\nexec %s --library-path %s:%s %s "$@"\n' \
-              "$LIBXBPSDIR" "$LIBDIR" "$LOADER" "$LIBXBPSDIR" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
+            printf '#!/bin/sh\nexec %s --library-path %s:%s %s "$@"\n' \
+              "$LOADER" "$LIBXBPSDIR" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
             chmod +x "/opt/xbps-bin/$n"
           done
           /opt/xbps-bin/xbps-create --version
           echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-bin" >> "$GITHUB_ENV"
 
-      - name: Bootstrap xbps-src
-        if: inputs.engines != 'nix'
-        run: |
-          export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
-          # runners ubuntu-24.04: AppArmor bloquea userns sin privilegio;
-          # el resto corre como usuario normal (igual que en un host real)
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          cd "$AUR2XBPS_VOID_DIR"
-          ./xbps-src -A x86_64 binary-bootstrap
-          # Post-bootstrap, xbps-src exige tools del masterdir (ABI .so.6)
-          # en HOST. Shims dedicados con LD_LIBRARY_PATH SOLO dentro del
-          # wrapper (el export global envenena binarios del runner).
-          MD="$AUR2XBPS_MASTERDIR"
-          test -x "$MD/usr/bin/xbps-uhelper"
-          mkdir -p /opt/xbps-bin-md
-          for b in "$MD"/usr/bin/xbps-*; do
-            n=$(basename "$b")
-            printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/usr/lib\nexport LD_LIBRARY_PATH\nexec %s "$@"\n' \
-              "$MD" "$b" > "/opt/xbps-bin-md/$n"
-            chmod +x "/opt/xbps-bin-md/$n"
-          done
-          /opt/xbps-bin-md/xbps-create --version
-          echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-bin-md" >> "$GITHUB_ENV"
-          # Los estáticos del mirror (0.59) quedan viejos vs el chroot
-          # (>=0.60): a partir de aquí usamos los glibc del masterdir,
-          # versión exactamente emparejada.
-          echo "AUR2XBPS_XBPS_BIN_DIR=$AUR2XBPS_VOID_DIR/masterdir-x86_64/usr/bin" >> "$GITHUB_ENV"
-
-      - name: Validar shard ${{ matrix.shard }}
+      - name: Validar shard ${{ matrix.shard }} (nix)
         env:
           SEED_FINAL: ${{ needs.plan.outputs.seed-final }}
           COUNT: ${{ needs.plan.outputs.count-final }}
@@ -228,24 +173,19 @@ jobs:
           TIMEOUT_MIN: ${{ needs.plan.outputs.timeout-final }}
           SHARD: ${{ matrix.shard }}
           ONLY: ${{ inputs.only }}
-          ENGINES: ${{ inputs.engines }}
-          AUR2XBPS_COPY_BINPKGS: "0"
+          ENGINES: nix
         run: |
-          export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
           OUT_MD="results-shard-${SHARD}of${SHARDS}.md"
           if [ -n "$ONLY" ]; then
             ARGS="--only $(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s + 1' | tr '\n' ' ')"
-            echo "modo retry (only), slice del shard ${SHARD}"
           else
             ARGS="--count-total $COUNT --seed $SEED_FINAL --shard ${SHARD}/${SHARDS}"
-            echo "modo campaña, shard ${SHARD}/${SHARDS}"
           fi
           # shellcheck disable=SC2086
           set +e
           python3 scripts/mass-validate.py $ARGS \
-            --engine "$ENGINES" \
+            --engine nix \
             --timeout $((TIMEOUT_MIN * 60)) \
             --out "$OUT_JSON" \
             > "$AUR2XBPS_LOGS/shard-${SHARD}.stdout.log" \
@@ -254,35 +194,130 @@ jobs:
           set -e
           echo "mass-validate rc=$RC"
           if [ "$RC" -ne 0 ]; then
-            echo "::warning::crash global en shard ${SHARD} (rc=${RC}), tail de stderr:"
+            echo "::warning::crash global en shard ${SHARD} (rc=${RC})"
             tail -40 "$AUR2XBPS_LOGS/shard-${SHARD}.stderr.log" || true
           fi
-          if [ -f "$OUT_MD" ]; then cat "$OUT_MD"; fi
+          [ -f "$OUT_MD" ] && cat "$OUT_MD" || true
           exit 0
 
-      - name: Preparar staging del shard
+      - name: Preparar staging del shard (nix)
         if: always()
         run: |
-          mkdir -p shard-out/logs shard-out/xbps/from-nix shard-out/xbps/from-xbps-src
+          mkdir -p shard-out/logs shard-out/xbps/from-nix
           cp results-shard-*.json results-shard-*.md shard-out/ 2>/dev/null || true
           cp -a "$AUR2XBPS_LOGS"/. shard-out/logs/ 2>/dev/null || true
           find "$AUR2XBPS_ROOT/repo" -name '*.xbps' \
             -exec cp {} shard-out/xbps/from-nix/ \; 2>/dev/null || true
+          echo "ficheros en staging: $(find shard-out -type f | wc -l)"
+
+      - name: Subir artefactos del shard (nix)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: campaign-shard-${{ matrix.shard }}-nix
+          path: shard-out
+          if-no-files-found: warn
+
+  build-xbps:
+    name: Shard ${{ matrix.shard }} · xbps-src
+    needs: plan
+    if: inputs.engines != 'nix'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/void-linux/void-glibc-full
+      options: --privileged
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards-list) }}
+    env:
+      AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
+      AUR2XBPS_LOGS: /tmp/aur2xbps-logs-xbps
+      AUR2XBPS_VOID_DIR: /void-packages
+      AUR2XBPS_MASTERDIR: /void-packages/masterdir-x86_64
+      XBPS_ALLOW_CHROOT_BREAKOUT: "1"
+      AUR2XBPS_COPY_BINPKGS: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Deps contenedor Void
+        run: |
+          xbps-install -Sy python3-pip openssl || xbps-install -Syu python3-pip openssl
+          python3 -m pip install --break-system-packages httpx pyyaml || \
+            python3 -m pip install httpx pyyaml
+          mkdir -p "$AUR2XBPS_ROOT/cache" "$AUR2XBPS_ROOT/sources" \
+                   "$AUR2XBPS_ROOT/repo" "$AUR2XBPS_ROOT/keys" "$AUR2XBPS_LOGS"
+          openssl genrsa -out "$AUR2XBPS_ROOT/keys/privkey.pem" 4096
+          chmod 600 "$AUR2XBPS_ROOT/keys/privkey.pem"
+          # el checkout vive fuera de AUR2XBPS_VOID_DIR: enlazamos al árbol
+          ln -sfn "$(pwd)/common/void-packages" /void-packages
+
+      - name: Bootstrap xbps-src (contenedor nativo)
+        run: |
+          cd "$AUR2XBPS_VOID_DIR"
+          ./xbps-src -A x86_64 binary-bootstrap
+
+      - name: Validar shard ${{ matrix.shard }} (xbps-src)
+        env:
+          SEED_FINAL: ${{ needs.plan.outputs.seed-final }}
+          COUNT: ${{ needs.plan.outputs.count-final }}
+          SHARDS: ${{ needs.plan.outputs.shards-final }}
+          TIMEOUT_MIN: ${{ needs.plan.outputs.timeout-final }}
+          SHARD: ${{ matrix.shard }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
+          OUT_MD="results-shard-${SHARD}of${SHARDS}.md"
+          if [ -n "$ONLY" ]; then
+            ARGS="--only $(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s + 1' | tr '\n' ' ')"
+          else
+            ARGS="--count-total $COUNT --seed $SEED_FINAL --shard ${SHARD}/${SHARDS}"
+          fi
+          cd /__w/aur2xbps/aur2xbps
+          # shellcheck disable=SC2086
+          set +e
+          python3 scripts/mass-validate.py $ARGS \
+            --engine xbps-src \
+            --timeout $((TIMEOUT_MIN * 60)) \
+            --out "$OUT_JSON" \
+            > "$AUR2XBPS_LOGS/shard-${SHARD}.stdout.log" \
+            2> "$AUR2XBPS_LOGS/shard-${SHARD}.stderr.log"
+          RC=$?
+          set -e
+          echo "mass-validate rc=$RC"
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::crash global en shard ${SHARD} (rc=${RC})"
+            tail -40 "$AUR2XBPS_LOGS/shard-${SHARD}.stderr.log" || true
+          fi
+          [ -f "$OUT_MD" ] && cat "$OUT_MD" || true
+          exit 0
+
+      - name: Preparar staging del shard (xbps-src)
+        if: always()
+        run: |
+          cd /__w/aur2xbps/aur2xbps
+          mkdir -p shard-out/logs shard-out/xbps/from-xbps-src
+          cp results-shard-*.json results-shard-*.md shard-out/ 2>/dev/null || true
+          cp -a "$AUR2XBPS_LOGS"/. shard-out/logs/ 2>/dev/null || true
           find "$AUR2XBPS_VOID_DIR/hostdir/binpkgs" -maxdepth 1 -name '*.xbps' \
             -exec cp {} shard-out/xbps/from-xbps-src/ \; 2>/dev/null || true
           echo "ficheros en staging: $(find shard-out -type f | wc -l)"
 
-      - name: Subir artefactos del shard
+      - name: Subir artefactos del shard (xbps-src)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: campaign-shard-${{ matrix.shard }}
+          name: campaign-shard-${{ matrix.shard }}-xbpsrc
           path: shard-out
           if-no-files-found: warn
 
   report:
     name: Reporte de campaña
-    needs: [plan, build]
+    needs: [plan, build-nix, build-xbps]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -320,8 +355,31 @@ jobs:
               except Exception as exc:
                   print(f"aviso: {path} ilegible: {exc}")
                   continue
-              if isinstance(data, dict):
-                  results.update(data)
+              if not isinstance(data, dict):
+                  continue
+              for pkg, entrada in data.items():
+                  if pkg == "@blocked":
+                      prev = results.setdefault("@blocked", [])
+                      if isinstance(entrada, list):
+                          for item in entrada:
+                              if item not in prev:
+                                  prev.append(item)
+                      continue
+                  if not isinstance(entrada, dict):
+                      continue
+                  nueva = json.loads(json.dumps(entrada))
+                  nueva.setdefault("pkg", pkg)
+                  previa = results.get(pkg)
+                  if isinstance(previa, dict):
+                      previa.setdefault("engines", {}).update(nueva.get("engines", {}))
+                      shards = previa.setdefault("shards", [])
+                      for s in nueva.get("shards", []):
+                          if s not in shards:
+                              shards.append(s)
+                      previa["ok"] = bool(previa["engines"]) and all(
+                          e.get("ok") for e in previa["engines"].values())
+                  else:
+                      results[pkg] = nueva
 
           blocked_extra = results.pop("@blocked", [])
           pkgs = {k: v for k, v in results.items() if isinstance(v, dict)}
@@ -330,7 +388,7 @@ jobs:
           fails = {k: v for k, v in pkgs.items() if not v.get("ok")}
           blocked = [
               k for k, v in fails.items()
-              if any(e.get("detail", "").startswith("bloqueado")
+              if any(str(e.get("detail", "")).startswith("bloqueado")
                      for e in v.get("engines", {}).values())
           ]
           causes = {}
@@ -340,7 +398,7 @@ jobs:
               for eng, e in v.get("engines", {}).items():
                   if not e.get("ok"):
                       c = e.get("detail") or v.get("crash") or "desconocido"
-                      causes.setdefault(c[:60], []).append(f"{k} [{eng}]")
+                      causes.setdefault(str(c)[:60], []).append(f"{k} [{eng}]")
 
           with open("campaign-results.json", "w") as fh:
               json.dump({"packages": pkgs, "blocked": blocked_extra},
@@ -364,8 +422,8 @@ jobs:
           ]
           if causes:
               lines += ["| causa raíz | × | paquetes |", "|---|---|---|"]
-              for c, pkgs in sorted(causes.items(), key=lambda kv: -len(kv[1])):
-                  lines.append(f"| `{c}` | {len(pkgs)} | {', '.join(pkgs[:8])} |")
+              for c, pks in sorted(causes.items(), key=lambda kv: -len(kv[1])):
+                  lines.append(f"| `{c}` | {len(pks)} | {', '.join(pks[:8])} |")
           else:
               lines.append("(sin fallos)")
           report = "\n".join(lines) + "\n"
