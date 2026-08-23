@@ -150,11 +150,11 @@ jobs:
         if: inputs.engines != 'nix'
         run: |
           export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
-          # runners ubuntu-24.04: AppArmor bloquea userns sin privilegio
+          # runners ubuntu-24.04: AppArmor bloquea userns sin privilegio;
+          # el resto corre como usuario normal (igual que en un host real)
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           cd "$AUR2XBPS_VOID_DIR"
-          sudo env PATH="$PATH" XBPS_ALLOW_CHROOT_BREAKOUT=1 XBPS_CHROOT_CMD=uchroot \
-            ./xbps-src -A x86_64 binary-bootstrap
+          ./xbps-src -A x86_64 binary-bootstrap
 
       - name: Validar shard ${{ matrix.shard }}
         env:
@@ -168,7 +168,6 @@ jobs:
           AUR2XBPS_COPY_BINPKGS: "0"
         run: |
           export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
-          export XBPS_CHROOT_CMD=uchroot
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
           OUT_MD="results-shard-${SHARD}of${SHARDS}.md"
