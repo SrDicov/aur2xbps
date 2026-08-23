@@ -484,9 +484,11 @@ def _summary(results: dict, md_path: Path, engines: list[str]) -> None:
     lines.append("\n## Detalle\n")
     for k, v in sorted(norm.items()):
         mark = "OK" if v.get("ok") else "FAIL"
-        eng = "; ".join(f"{e}={'/'.join(s for s in ('prepare', 'build', 'smoke')
-                                       if ev.get(s)) or 'FAIL'}"
-                        for e, ev in v.get("engines", {}).items())
+        eng = "; ".join(
+            "{}={}".format(
+                e, "/".join(s for s in ("prepare", "build", "smoke")
+                            if ev.get(s)) or "FAIL")
+            for e, ev in v.get("engines", {}).items())
         extra = ""
         if not v.get("ok"):
             if v.get("crash"):
