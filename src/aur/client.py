@@ -31,19 +31,50 @@ class RateLimitError(RuntimeError):
     pass
 
 
+DB_BUSY_RETRIES = 5
+
+
 class AURClient:
     def __init__(self, db_path: str | Path = DEFAULT_DB, timeout: float = 20.0,
                  max_retries: int = 4, daily_limit: int = RATE_LIMIT_PER_DAY,
                  offline: bool = False):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path)
+        self._conn = self._connect()
         self._init_db()
         self.timeout = timeout
         self.max_retries = max_retries
         self.daily_limit = daily_limit
         self.offline = offline
         self.req_count = 0
+
+    # ---------- SQLite ----------
+    def _connect(self) -> sqlite3.Connection:
+        """Conexión endurecida (H-1.1): WAL permite lectores concurrentes con
+        escritura; busy_timeout absorbe locks breves de otros procesos
+        (vouru + CLI comparten cache.db)."""
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+    def _db_write(self, fn, *args, **kw):
+        """Reintento con backoff ante SQLITE_BUSY/locked (H-1.1): la ventana
+        residual que busy_timeout no cubre no debe abortar el pipeline."""
+        last: Exception | None = None
+        for attempt in range(DB_BUSY_RETRIES):
+            try:
+                return fn(*args, **kw)
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "locked" not in msg and "busy" not in msg:
+                    raise
+                last = e
+                time.sleep(0.05 * (2 ** attempt))
+        raise last  # type: ignore[misc]
+
+
 
     # ---------- SQLite ----------
     def _init_db(self):
@@ -70,8 +101,23 @@ class AURClient:
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE INDEX IF NOT EXISTS idx_rpc_cache_fetched
+            ON rpc_cache(fetched_at);
         """)
+        self._db_write(self._gc)
         self._conn.commit()
+
+    def _gc(self, cache_ttl: int = 48 * 3600, counter_keep_days: int = 7):
+        """Recolector de basura (H-1.1): purga respuestas RPC caducadas y
+        contadores diarios antiguos; sin esto cache.db crece sin límite y las
+        búsquedas degradan. Indexado vía idx_rpc_cache_fetched → barato."""
+        cur = self._conn.cursor()
+        cur.execute("DELETE FROM rpc_cache WHERE fetched_at < ?",
+                    (time.time() - cache_ttl,))
+        # reqcount_YYYY-MM-DD: comparación lexicográfica válida para ISO
+        cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - counter_keep_days * 86400))
+        cur.execute("DELETE FROM meta WHERE key LIKE 'reqcount_%' AND substr(key, 10) < ?",
+                    (cutoff,))
 
     def _cache_get(self, url: str) -> Optional[Tuple[dict, str | None, str | None]]:
         cur = self._conn.execute(
@@ -82,11 +128,13 @@ class AURClient:
         return None
 
     def _cache_put(self, url: str, data: dict, etag: str | None, lastmod: str | None):
-        self._conn.execute(
-            "INSERT OR REPLACE INTO rpc_cache(url,method,response,etag,last_modified,fetched_at) "
-            "VALUES (?,'GET',?,?,?,?)",
-            (url, json.dumps(data), etag, lastmod, time.time()))
-        self._conn.commit()
+        def _w():
+            self._conn.execute(
+                "INSERT OR REPLACE INTO rpc_cache(url,method,response,etag,last_modified,fetched_at) "
+                "VALUES (?,'GET',?,?,?,?)",
+                (url, json.dumps(data), etag, lastmod, time.time()))
+            self._conn.commit()
+        self._db_write(_w)
 
     def _counter_today(self) -> int:
         today = time.strftime("%Y-%m-%d")
@@ -97,9 +145,12 @@ class AURClient:
     def _bump_counter(self):
         today = time.strftime("%Y-%m-%d")
         n = self._counter_today() + 1
-        self._conn.execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)", (f"reqcount_{today}", str(n)))
-        self._conn.commit()
+
+        def _w():
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)", (f"reqcount_{today}", str(n)))
+            self._conn.commit()
+        self._db_write(_w)
         self.req_count = n
         if n > self.daily_limit:
             raise RateLimitError(f"Límite {self.daily_limit} req/día excedido ({n})")

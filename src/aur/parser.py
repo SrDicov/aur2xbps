@@ -8,10 +8,14 @@ cabecera pkgbase luego secciones pkgname, claves arch-qualified
 Ref: AGENTS.md:Arch input, gotcha .SRCINFO stale.
 """
 from __future__ import annotations
+import logging
+import re
 from pathlib import Path
 from typing import Dict, List
 from src.common.types import (SrcInfo, SrcInfoPackage, SCALAR_KEYS, ARRAY_KEYS,
                               ARCHES, split_arch_key)
+
+log = logging.getLogger(__name__)
 
 # Sumas soportadas por makepkg -> clave interna corta
 SUM_ALIASES = {
@@ -20,15 +24,46 @@ SUM_ALIASES = {
     "b2sums": "b2",
 }
 
+# --- Sanitización léxica (H-1.2 / AUDIT-2026-08) ---
+# El .SRCINFO es input no confiable: control chars rompen plantillas Nix/XBPS,
+# nombres no-ASCII permiten homoglifos que burlan mapeos y filtros.
+CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*$")     # pkgbase/pkgname
+VER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+~-]*$")     # pkgver (más laxo que makepkg)
+KEY_RE = re.compile(r"^[A-Za-z0-9_]+$")
+MAX_FILE_BYTES = 4 * 1024 * 1024      # .SRCINFO real más grande conocido <100KB
+MAX_LINE_LEN = 16 * 1024              # línea absurda = manipulación/DoS
+MAX_PACKAGES = 200                    # split packages absurdos = DoS
+KNOWN_ROOTS = set(SCALAR_KEYS) | set(ARRAY_KEYS)
+
+
+def _check_name(kind: str, value: str) -> None:
+    if not NAME_RE.match(value):
+        raise ValueError(
+            f"{kind} con caracteres inválidos (¿homoglifos/manipulación?): {value!r}")
+
 
 def parse_srcinfo(text: str) -> SrcInfo:
-    """Parsea texto .SRCINFO. Levanta ValueError si formato inválido."""
+    """Parsea texto .SRCINFO. Levanta ValueError si formato inválido o si se
+    detectan caracteres de control; claves desconocidas generan warnings en
+    SrcInfo.warnings sin abortar (visibilidad, no silencio)."""
+    if len(text.encode("utf-8", errors="replace")) > MAX_FILE_BYTES:
+        raise ValueError(f".SRCINFO excede {MAX_FILE_BYTES // (1024*1024)}MB — rechazado")
+    if CONTROL_CHARS_RE.search(text):
+        bad = CONTROL_CHARS_RE.search(text).group(0)
+        raise ValueError(
+            f".SRCINFO contiene carácter de control no imprimible "
+            f"(\\x{ord(bad):02x}) — posible manipulación, rechazado")
+
+    warnings: List[str] = []
     pkgbase: str | None = None
     current_section = "pkgbase"
     section_data: Dict[str, Dict[str, List[str]]] = {"pkgbase": {}}
     pkgs_order: List[str] = []
 
     for raw in text.splitlines():
+        if len(raw) > MAX_LINE_LEN:
+            raise ValueError(f"Línea de {len(raw)} chars excede el límite — rechazada")
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -39,6 +74,17 @@ def parse_srcinfo(text: str) -> SrcInfo:
         k, v = [s.strip() for s in line.split("=", 1)]
         if not k:
             raise ValueError(f"Clave vacía en línea: {raw!r}")
+        if not KEY_RE.match(k):
+            raise ValueError(
+                f"Clave con caracteres fuera de [A-Za-z0-9_]: {k!r}")
+
+        root, arch = split_arch_key(k)
+        if root not in KNOWN_ROOTS:
+            msg = (f"clave desconocida '{k}'"
+                   + (f" (sufijo arch '{arch}' inválido)" if "_" in k else "")
+                   + ": ignorada")
+            warnings.append(msg)
+            log.warning(".SRCINFO: %s", msg)
 
         # Normalizar arrays parenizados de makepkg: 'key = (a b "c d")'
         if v.startswith("(") and v.endswith(")"):
@@ -48,14 +94,18 @@ def parse_srcinfo(text: str) -> SrcInfo:
                 if not p:
                     continue
                 if k == "pkgbase":
+                    _check_name("pkgbase", p)
                     pkgbase = p
                     section_data["pkgbase"].setdefault("pkgbase", []).append(p)
                     current_section = "pkgbase"
                 elif k == "pkgname":
+                    _check_name("pkgname", p)
                     current_section = p
                     if p not in section_data:
                         section_data[p] = {}
                         pkgs_order.append(p)
+                        if len(section_data) > MAX_PACKAGES:
+                            raise ValueError(f"> {MAX_PACKAGES} subpaquetes — DoS, rechazado")
                     section_data[p].setdefault("pkgname", []).append(p)
                 else:
                     target = section_data.setdefault(current_section, {})
@@ -63,15 +113,19 @@ def parse_srcinfo(text: str) -> SrcInfo:
             continue
 
         if k == "pkgbase":
+            _check_name("pkgbase", v)
             pkgbase = v
             section_data["pkgbase"].setdefault("pkgbase", []).append(v)
             current_section = "pkgbase"
             continue
         if k == "pkgname":
+            _check_name("pkgname", v)
             current_section = v
             if v not in section_data:
                 section_data[v] = {}
                 pkgs_order.append(v)
+                if len(section_data) > MAX_PACKAGES:
+                    raise ValueError(f"> {MAX_PACKAGES} subpaquetes — DoS, rechazado")
             section_data[v].setdefault("pkgname", []).append(v)
             continue
 
@@ -86,7 +140,8 @@ def parse_srcinfo(text: str) -> SrcInfo:
             raise ValueError("No se encontró pkgbase ni pkgname en .SRCINFO")
 
     base_info = section_data.get("pkgbase", {})
-    result = SrcInfo(pkgbase=pkgbase, base_values=base_info, packages={})
+    result = SrcInfo(pkgbase=pkgbase, base_values=base_info, packages={},
+                     warnings=warnings)
 
     # Monopaquete sin sección pkgname explícita: todo vive en pkgbase
     names = pkgs_order if pkgs_order else [pkgbase]
@@ -103,12 +158,19 @@ def parse_srcinfo(text: str) -> SrcInfo:
         if not pkgs_order:
             pdict = base_info
 
+        pkgver_val = (merged(pdict, "pkgver") or ["0"])[0]
+        if not VER_RE.match(pkgver_val):
+            raise ValueError(f"{pname}: pkgver con formato inválido: {pkgver_val!r}")
+        epoch_val = (merged(pdict, "epoch") or [None])[0]
+        if epoch_val is not None and not str(epoch_val).isdigit():
+            raise ValueError(f"{pname}: epoch debe ser numérico: {epoch_val!r}")
+
         p = SrcInfoPackage(
             pkgname=pname,
             pkgbase=pkgbase,
-            pkgver=(merged(pdict, "pkgver") or ["0"])[0],
+            pkgver=pkgver_val,
             pkgrel=(merged(pdict, "pkgrel") or ["1"])[0],
-            epoch=(merged(pdict, "epoch") or [None])[0],
+            epoch=epoch_val,
             pkgdesc=(merged(pdict, "pkgdesc") or [None])[0],
             url=(merged(pdict, "url") or [None])[0],
             install=(pdict.get("install") or base_info.get("install") or [None])[0],
