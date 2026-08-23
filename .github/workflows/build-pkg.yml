@@ -47,12 +47,7 @@ jobs:
       - name: xbps estáticos (última release void-linux/xbps)
         run: |
           API=https://api.github.com/repos/void-linux/xbps/releases/latest
-          URL=$(curl -sS "$API" | python3 -c '
-            import json, sys
-            assets = json.load(sys.stdin)["assets"]
-            print(next(a["browser_download_url"] for a in assets
-                       if "static" in a["name"] and "x86_64" in a["name"]
-                       and a["name"].endswith(".tar.gz")))')
+          URL=$(curl -sS "$API" | python3 -c 'import json,sys; assets=json.load(sys.stdin)["assets"]; print(next(a["browser_download_url"] for a in assets if "static" in a["name"] and "x86_64" in a["name"] and a["name"].endswith(".tar.gz")))')
           mkdir -p /opt/xbps-static
           curl -fsSL "$URL" | tar xz -C /opt/xbps-static
           BIN_DIR=$(dirname "$(find /opt/xbps-static -name xbps-create | head -1)")
