@@ -135,16 +135,30 @@ jobs:
             experimental-features = nix-command flakes
             sandbox = true
 
-      - name: xbps estáticos 0.60+ (pkgsStatic de nixpkgs)
+      - name: xbps tools actuales vía rootfs musl + shims ld-musl
         run: |
-          # El dir /static del mirror está congelado en 0.59 (< mínimo de
-          # void-packages HEAD); pkgsStatic.xbps da binarios musl estáticos
-          # de la versión corriente, emparejados con el chroot.
-          nix build github:NixOS/nixpkgs/nixos-unstable#pkgsStatic.xbps \
-            -o /opt/xbps-result --print-build-logs
-          test -x /opt/xbps-result/bin/xbps-create
-          test -x /opt/xbps-result/bin/xbps-rindex
-          echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-result/bin" >> "$GITHUB_ENV"
+          # El mirror /static está congelado en 0.59 (< mínimo de
+          # void-packages HEAD) y pkgsStatic.xbps no compila (bug upstream).
+          # El ROOTFS musl trae tools 0.60.x completos; los binarios musl
+          # corren sobre Ubuntu vía su propio loader. SOLO afecta a las
+          # herramientas de empaquetado: los .xbps siguen siendo glibc.
+          IDX=https://repo-default.voidlinux.org/live/current/
+          FILE=$(curl -sS "$IDX" | grep -oE 'void-x86_64-musl-ROOTFS-[0-9]+\.tar\.xz' | sort -V | tail -1)
+          echo "rootfs: $FILE"
+          mkdir -p /opt/voidrootfs
+          curl -fsSL "$IDX$FILE" | tar -xJ -C /opt/voidrootfs
+          test -x /opt/voidrootfs/usr/bin/xbps-create
+          LOADER=$(find /opt/voidrootfs -name 'ld-musl-x86_64.so.1' | head -1)
+          test -n "$LOADER"
+          mkdir -p /opt/xbps-bin
+          for b in /opt/voidrootfs/usr/bin/xbps-*; do
+            n=$(basename "$b")
+            printf '#!/bin/sh\nexec %s --library-path /opt/voidrootfs/usr/lib:/opt/voidrootfs/lib %s "$@"\n' \
+              "$LOADER" "$b" > "/opt/xbps-bin/$n"
+            chmod +x "/opt/xbps-bin/$n"
+          done
+          /opt/xbps-bin/xbps-uhelper version || true
+          echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-bin" >> "$GITHUB_ENV"
 
       - name: Bootstrap xbps-src
         if: inputs.engines != 'nix'
