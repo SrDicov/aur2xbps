@@ -153,7 +153,7 @@ jobs:
           # runners ubuntu-24.04: AppArmor bloquea userns sin privilegio
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           cd "$AUR2XBPS_VOID_DIR"
-          sudo env PATH="$PATH" XBPS_CHROOT_CMD=uchroot \
+          sudo env PATH="$PATH" XBPS_ALLOW_CHROOT_BREAKOUT=1 XBPS_CHROOT_CMD=uchroot \
             ./xbps-src -A x86_64 binary-bootstrap
 
       - name: Validar shard ${{ matrix.shard }}
