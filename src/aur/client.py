@@ -118,6 +118,10 @@ class AURClient:
         cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - counter_keep_days * 86400))
         cur.execute("DELETE FROM meta WHERE key LIKE 'reqcount_%' AND substr(key, 10) < ?",
                     (cutoff,))
+        # respuestas vacías envenenadas (paquete borrado de AUR vuelve a
+        # existir, AUR parpadea): jamás servir 0-resultados desde caché
+        cur.execute(
+            "DELETE FROM rpc_cache WHERE method='GET' AND response LIKE '%\"resultcount\": 0%'")
 
     def _cache_get(self, url: str) -> Optional[Tuple[dict, str | None, str | None]]:
         cur = self._conn.execute(
@@ -198,6 +202,11 @@ class AURClient:
             return cached[0]
         resp.raise_for_status()
         data = resp.json()
+        # NO cachear 0-resultados: un paquete borrado/parpadeo de AUR quedaría
+        # "no existe" para siempre (caso yazi-bin, ago 2026). Reintentos
+        # posteriores golpean red y recuperan el estado real.
+        if isinstance(data.get("results"), list) and not data["results"]:
+            return data
         self._cache_put(url, data, resp.headers.get("ETag"), resp.headers.get("Last-Modified"))
         return data
 

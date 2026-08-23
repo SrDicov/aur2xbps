@@ -43,7 +43,8 @@ def prepare_package(pkgname: str, sources_dir: Path = DEFAULT_SOURCES,
         result.errors.append(f"RPC info falló: {e}")
         return result
     if not info:
-        result.errors.append(f"{pkgname}: no existe en AUR")
+        result.errors.append(
+            f"{pkgname}: no existe en AUR (eliminado upstream o nombre erróneo)")
         return result
 
     # 2. Clonar repo git del PKGBUILD (solo metadatos; NO se ejecuta)
