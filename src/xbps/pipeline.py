@@ -346,12 +346,20 @@ def _ensure_chroot_repos(md: Path) -> None:
               f"printf 'repository=https://repo-default.voidlinux.org/current\\n' > {conf}"])
 
 
+CHROOT_LAST_ERR = ""
+
+
 def chroot_install(pkgname: str) -> bool:
+    global CHROOT_LAST_ERR
+    CHROOT_LAST_ERR = ""
     r = _run([*sudo_prefix(), XBPS_REMOVE(), "-r", str(MASTERDIR()), "-y", pkgname], timeout=300)
     _ensure_chroot_repos(MASTERDIR())
     r2 = _run([*sudo_prefix(), XBPS_INSTALL(), "-r", str(MASTERDIR()),
                f"--repository={REPO}", "-y", pkgname], timeout=900)
-    return r2.returncode == 0 and "installed successfully" in (r2.stdout + r2.stderr)
+    if r2.returncode == 0 and "installed successfully" in (r2.stdout + r2.stderr):
+        return True
+    CHROOT_LAST_ERR = ((r2.stdout or "") + (r2.stderr or ""))[-600:]
+    return False
 
 
 def chroot_smoke(binary_candidates: List[str]) -> tuple[bool, int]:
@@ -464,6 +472,8 @@ def full_pipeline(nix_result: Path, pkgname: str, pkgver: str, desc: str,
     res.installed = chroot_install(pkgname)
     if not res.installed:
         res.errors.append("instalación en chroot falló")
+        # observabilidad: superficie el motivo real capturado por chroot_install
+        print(f"[chroot] detalle: {CHROOT_LAST_ERR}", file=sys.stderr)
         return res
 
     # 7. Smoke EEL — candidatos derivados del stage real; jamás rutas
