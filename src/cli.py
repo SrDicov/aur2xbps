@@ -247,15 +247,28 @@ def _build_with_nix(pkgname: str) -> int:
     out_dir = cfg.derivations_dir / pkgname
     flake = transpile(pr.srcinfo, out_dir)
     # python-pep517/legacy y VCS-python generan el attr "<pkg>-src"
-    # (staging de fuentes; el build real ocurre en Void)
+    # (staging de fuentes; el build real ocurre en Void). El motor nix no
+    # puede terminarlos: se reporta omisión estructurada, no fallo.
     attr = pkgname
     try:
         ftxt = flake.read_text()
         if f'"{attr}" =' not in ftxt and f'"{attr}-src" =' in ftxt:
-            attr = f"{pkgname}-src"
+            print(json.dumps({"engine": "nix", "ok": True,
+                              "omitted": "python-requiere-xbps-src"}))
+            return 0
     except OSError:
         pass
-    ok, msg = build_with_hash_fix(out_dir, attr, timeout=max(cfg.build_timeout, 1800))
+
+    ok, msg = build_with_hash_fix(out_dir, attr,
+                                  timeout=max(cfg.build_timeout, 1800))
+    if not ok and "No targets specified and no makefile found" in msg \
+            and "no configure script" in msg:
+        # autotools elegido por defecto pero la fuente usa otro sistema:
+        # reintentar UNA vez con meson antes de rendirse
+        print("[nix] fallback de ecosistema: autotools → meson", file=sys.stderr)
+        transpile(pr.srcinfo, out_dir, eco_override="meson")
+        ok, msg = build_with_hash_fix(out_dir, attr,
+                                      timeout=max(cfg.build_timeout, 1800))
     if not ok:
         _die(f"nix build falló: …{msg[-400:]}", 6)
     pkg0 = next(iter(pr.srcinfo.packages.values()))

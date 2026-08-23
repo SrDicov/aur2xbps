@@ -57,6 +57,7 @@ DERIVATION_BIN = '''
             runHook preUnpack
             case "$src" in
               *.deb) dpkg-deb --fsys-tarfile $src | tar -x --no-same-owner --no-same-permissions ;;
+              *.rpm) rpm2cpio $src | cpio -idm --quiet ;;
               *.zip) unzip -q $src ;;
               *)     tar -xf $src --no-same-owner --no-same-permissions 2>/dev/null || dpkg-deb -x $src . ;;
             esac
@@ -827,13 +828,16 @@ def _pick_main_source(urls: List[str]) -> str:
 
 
 def _native_inputs_for_url(url: str, base: str) -> str:
-    """nativeBuildInputs según tipo de fuente: file siempre; unzip/dpkg según extensión."""
+    """nativeBuildInputs según tipo de fuente: file siempre; unzip/dpkg/rpm
+    según extensión."""
     extra = ["file"]  # necesario para detección ELF en installPhase/fixup
     low = url.lower()
     if low.endswith(".zip"):
         extra.append("unzip")
     if low.endswith(".deb") or "dpkg-deb" in base:
         extra.append("dpkg")
+    if low.endswith(".rpm") or "rpm2cpio" in base:
+        extra.extend(["rpm", "cpio"])
     return f"{base} {' '.join(extra)}".strip()
 
 
@@ -843,7 +847,8 @@ def _rpath_extra(arch: str) -> str:
 
 
 def generate_flake(srcinfo: SrcInfo, out_dir: Path,
-                   nixos_ref: str = NIXOS_REF) -> Path:
+                   nixos_ref: str = NIXOS_REF,
+                   eco_override: str | None = None) -> Path:
     """Genera flake.nix con una derivación por subpaquete."""
     from src.common.config import get_config, nix_system as _nix_system
     out_dir = Path(out_dir)
@@ -915,7 +920,7 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
             fmt_kwargs = dict(rpath_extra=_rpath_extra(cfg_arch))
             build_inputs_str = map_deps_to_nix(pkg.depends_for(), strict=True) or "glibc"
         else:
-            eco = detect_ecosystem(pkg)
+            eco = eco_override or detect_ecosystem(pkg)
             template = ECOSYSTEM_TEMPLATES.get(eco, DERIVATION_SOURCE)
             fmt_kwargs = {}
             if eco == "autotools":
@@ -998,9 +1003,12 @@ def _dedupe_inputs(spec: str) -> str:
     return " ".join(seen)
 
 
-def transpile(srcinfo: SrcInfo, out_dir: Path) -> Path:
+def transpile(srcinfo: SrcInfo, out_dir: Path,
+              eco_override: str | None = None) -> Path:
     """API de alto nivel: genera flake + lock + lint. Lanza si lint falla."""
-    flake = generate_flake(srcinfo, out_dir, nixos_ref=resolve_nixos_ref(srcinfo))
+    flake = generate_flake(srcinfo, out_dir,
+                           nixos_ref=resolve_nixos_ref(srcinfo),
+                           eco_override=eco_override)
     errs = lint_flake_patchelf(flake)
     if errs:
         raise RuntimeError(f"Linter patchelf falló: {errs}")

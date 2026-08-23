@@ -279,6 +279,15 @@ def validate_one(pkg: str, kind: str, engines: list[str],
         t0 = time.time()
         rc, payload, tail = run_cli(["build", pkg, "--engine", engine],
                                     timeout, pkg, engine, LOGDIR)
+        if rc == 0 and payload and payload.get("omitted"):
+            # limitación estructural del motor (ej. python requiere xbps-src):
+            # cuenta como neutra para el paquete, visible en el reporte
+            out["engines"][engine] = {
+                "ok": True, "omitted": payload["omitted"],
+                "detail": f"omitido: {payload['omitted']}",
+                "stages": {"prepare": True, "build": False, "smoke": False},
+                "secs": round(time.time() - t0, 1)}
+            continue
         if rc != 0:
             # distinguir bloqueo de seguridad (exit 2/3) de fallo de build
             blocked = rc in (2, 3) or "Atomic" in tail or "bloquead" in tail.lower()
