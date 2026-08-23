@@ -56,7 +56,16 @@ class XbpsResult:
 
 
 def _run(cmd: List[str], timeout: int = 600, capture: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+    # Sin check=True: los llamadores inspeccionan returncode (fallbacks).
+    # Solo TimeoutExpired puede propagarse → scrub de argv con secretos (H-5.2).
+    try:
+        return subprocess.run(cmd, capture_output=capture, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        from src.xbps.builder import redact_cmd
+        if isinstance(getattr(e, "cmd", None), (list, tuple)):
+            e.cmd = redact_cmd(e.cmd)
+        raise
 
 
 def _void_python_version() -> str:

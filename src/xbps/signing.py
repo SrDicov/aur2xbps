@@ -27,8 +27,9 @@ def generate_keypair(priv: Path, pub: Path | None = None, bits: int = 4096):
 
 def sign_repo(repo_dir: Path, privkey: Path, signedby: str = "aur2xbps <aur2xbps@local>"):
     repo_dir = Path(repo_dir)
-    from src.xbps.builder import XBPS_RINDEX
-    subprocess.run([XBPS_RINDEX(), "--privkey", str(privkey), "--signedby", signedby, "--sign", str(repo_dir)], check=True)
+    from src.xbps.builder import XBPS_RINDEX, _run   # _run: redacción H-5.2 + timeout
+    _run([XBPS_RINDEX(), "--privkey", str(privkey), "--signedby", signedby,
+          "--sign", str(repo_dir)], timeout=300)
 
 if __name__ == "__main__":
     import sys

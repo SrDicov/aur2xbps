@@ -22,9 +22,38 @@ def XBPS_CREATE() -> str:  # noqa: N802 — API histórica, resuelve en runtime
 def XBPS_RINDEX() -> str:  # noqa: N802
     return find_xbps_tool("xbps-rindex")
 
+# H-5.2: banderas cuyo valor siguiente es un secreto/ruta sensible — jamás
+# imprimir en logs ni incrustar en excepciones (runit journal, tracebacks).
+SECRET_FLAGS = {"--privkey", "--sign-key"}
+
+
+def redact_cmd(cmd) -> List[str]:
+    """Copia del argv con valores tras banderas de secreto sustituidos."""
+    out: List[str] = []
+    redact_next = False
+    for part in cmd:
+        s = str(part)
+        if redact_next:
+            out.append("<redacted>")
+            redact_next = False
+        else:
+            out.append(s)
+            redact_next = s in SECRET_FLAGS
+    return out
+
+
 def _run(cmd: List[str], env: dict | None = None, timeout: int = 600):
-    print("$", " ".join(cmd))
-    subprocess.run(cmd, check=True, env=env, timeout=timeout)
+    print("$", " ".join(redact_cmd(cmd)))
+    try:
+        return subprocess.run(cmd, check=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        if isinstance(e.cmd, (list, tuple)):
+            e.cmd = redact_cmd(e.cmd)
+        raise
+    except subprocess.CalledProcessError as e:
+        if isinstance(e.cmd, (list, tuple)):
+            e.cmd = redact_cmd(e.cmd)
+        raise
 
 def create_xbps(
     stage_dir: Path,
