@@ -178,7 +178,7 @@ jobs:
               "$LOADER" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
             chmod +x "/opt/xbps-bin/$n"
           done
-          /opt/xbps-bin/xbps-uhelper version
+          /opt/xbps-bin/xbps-create --version
           echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-bin" >> "$GITHUB_ENV"
 
       - name: Bootstrap xbps-src
