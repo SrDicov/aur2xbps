@@ -395,6 +395,36 @@ def chroot_smoke(binary_candidates: List[str]) -> tuple[bool, int]:
     return False, -1
 
 
+def _stage_smoke_candidates(stage: Path, pkgname: str) -> List[str]:
+    """Candidatos de smoke DERIVADOS del stage real (nunca hardcodeados):
+    prioriza usr/bin/<pkgname>, luego <basename sin -bin>, luego ELFs
+    ejecutables, luego cualquier fichero. Máximo 4."""
+    bin_dir = stage / "usr" / "bin"
+    if not bin_dir.is_dir():
+        return [f"/usr/bin/{pkgname}"]
+    entries = sorted(p for p in bin_dir.iterdir()
+                     if p.is_file() or p.is_symlink())
+    if not entries:
+        return [f"/usr/bin/{pkgname}"]
+    base = pkgname.lower().removesuffix("-bin")
+
+    def is_exec(p: Path) -> bool:
+        try:
+            target = p.resolve()
+            with open(target, "rb") as fh:
+                head = fh.read(2)
+            return head == b"\x7fE" or head == b"#!"
+        except Exception:
+            return False
+
+    def prio(p: Path):
+        n = p.name.lower()
+        return (n != pkgname.lower(), n != base, not is_exec(p), n)
+
+    ordered = sorted(entries, key=prio)[:4]
+    return [f"/usr/bin/{p.name}" for p in ordered]
+
+
 def full_pipeline(nix_result: Path, pkgname: str, pkgver: str, desc: str,
                   smoke_binaries: Optional[List[str]] = None) -> XbpsResult:
     """Ejecuta la cadena completa para un paquete. Retorna resultado detallado."""
@@ -436,11 +466,9 @@ def full_pipeline(nix_result: Path, pkgname: str, pkgver: str, desc: str,
         res.errors.append("instalación en chroot falló")
         return res
 
-    # 7. Smoke EEL
-    candidates = smoke_binaries or [
-        f"/usr/bin/{pkgname}", f"/usr/share/{pkgname}/{pkgname}",
-        f"/opt/google/chrome/chrome", f"/usr/share/code/code",
-    ]
+    # 7. Smoke EEL — candidatos derivados del stage real; jamás rutas
+    #    hardcodeadas (los restos chrome/code provocaban fallos fantasma)
+    candidates = smoke_binaries or _stage_smoke_candidates(stage, pkgname)
     ok, missing = chroot_smoke(candidates)
     res.smoke_ok, res.ldd_missing = ok, max(missing, 0)
     if not ok:
