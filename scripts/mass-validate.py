@@ -282,8 +282,14 @@ def validate_one(pkg: str, kind: str, engines: list[str],
         if rc != 0:
             # distinguir bloqueo de seguridad (exit 2/3) de fallo de build
             blocked = rc in (2, 3) or "Atomic" in tail or "bloquead" in tail.lower()
-            detail = ("bloqueado por filtro de seguridad" if blocked
-                      else tail[-300:])
+            # npm sin package-lock.json upstream: invendable herméticamente,
+            # se excluye como bloqueado con causa clara (decisión campaña)
+            if "package-lock.json" in tail:
+                detail = "bloqueado: npm-lockless-upstream"
+            elif blocked:
+                detail = "bloqueado por filtro de seguridad"
+            else:
+                detail = tail[-300:]
         elif payload and payload.get("blocked"):
             detail = "bloqueado por filtro de seguridad (payload)"
         else:

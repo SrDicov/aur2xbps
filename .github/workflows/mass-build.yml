@@ -196,6 +196,9 @@ jobs:
         if: inputs.engines != 'nix'
         run: |
           export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
+          # tools del masterdir (libxbps.so.6) exigidos en host por xbps-src
+          # una vez CHROOT_READY: resolver sus libs del propio masterdir
+          export LD_LIBRARY_PATH="$AUR2XBPS_MASTERDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           # runners ubuntu-24.04: AppArmor bloquea userns sin privilegio;
           # el resto corre como usuario normal (igual que en un host real)
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
@@ -218,6 +221,7 @@ jobs:
           AUR2XBPS_COPY_BINPKGS: "0"
         run: |
           export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
+          export LD_LIBRARY_PATH="$AUR2XBPS_MASTERDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
           OUT_MD="results-shard-${SHARD}of${SHARDS}.md"

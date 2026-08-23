@@ -135,6 +135,8 @@ ARCH_TO_NIX = {
     "go": "go", "gcc-go": "gccgo",
     # make vive dentro de stdenv; el attr explícito es gnumake
     "make": "gnumake",
+    # renombres históricos nixpkgs: gconf vive en gnome2.GConf
+    "gconf": "gnome2.GConf",
     # libalpm vive en pacman (nixpkgs); Arch la separa
     "libalpm": "pacman", "pacman": "pacman",
     # GUI core
@@ -724,17 +726,23 @@ ECO_BODIES = {
 """,
     "meson": """
           unpackPhase = ''
-            # Normaliza fuente con múltiples entradas raíz
-            entries=($(ls -A))
-            if [ ''${{#entries[@]}} = 1 ] && [ -d "''${{entries[0]}}" ]; then
-              cd "''${{entries[0]}}"
-            fi
             runHook preUnpack
-            mkdir -p source && cd source
-            case "$src" in
-              *.zip) unzip -q $src ;;
-              *)     tar -xf $src --no-same-owner ;;
-            esac
+            # fetchgit entrega un directorio; los tarballs se normalizan
+            if [ -d "$src" ]; then
+              cp -a "$src" ./source
+              cd source
+            else
+              mkdir -p source && cd source
+              case "$src" in
+                *.zip) unzip -q $src ;;
+                *)     tar -xf $src --no-same-owner ;;
+              esac
+              entries=($(ls -A))
+              if [ ''${{#entries[@]}} = 1 ] && [ -d "''${{entries[0]}}" ]; then
+                cd "''${{entries[0]}}"
+              fi
+            fi
+            runHook postUnpack
           '';
           nativeBuildInputs = with pkgs; [ meson ninja pkg-config file {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
