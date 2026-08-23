@@ -148,16 +148,28 @@ jobs:
           mkdir -p /opt/voidrootfs
           curl -fsSL "$IDX$FILE" | tar -xJ -C /opt/voidrootfs
           test -x /opt/voidrootfs/usr/bin/xbps-create
-          LOADER=$(find /opt/voidrootfs -name 'ld-musl-x86_64.so.1' | head -1)
-          test -n "$LOADER"
+          # El loader puede ser symlink colgante según layout del tarball:
+          # resolver a fichero REAL ejecutable
+          LOADER=""
+          for cand in $(find /opt/voidrootfs -name 'ld-musl*' -o -name 'libc.musl-*' 2>/dev/null); do
+            r=$(readlink -f "$cand" 2>/dev/null || true)
+            if [ -n "$r" ] && [ -x "$r" ]; then LOADER="$r"; break; fi
+          done
+          if [ -z "$LOADER" ]; then
+            echo "::error::no se encontró ld-musl ejecutable en el rootfs"
+            find /opt/voidrootfs -name '*musl*' | head -20
+            exit 1
+          fi
+          echo "loader musl: $LOADER"
+          LIBDIR=$(dirname "$LOADER")
           mkdir -p /opt/xbps-bin
           for b in /opt/voidrootfs/usr/bin/xbps-*; do
             n=$(basename "$b")
-            printf '#!/bin/sh\nexec %s --library-path /opt/voidrootfs/usr/lib:/opt/voidrootfs/lib %s "$@"\n' \
-              "$LOADER" "$b" > "/opt/xbps-bin/$n"
+            printf '#!/bin/sh\nexec %s --library-path %s:%s/../usr/lib %s "$@"\n' \
+              "$LOADER" "$LIBDIR" "$LIBDIR" "$b" > "/opt/xbps-bin/$n"
             chmod +x "/opt/xbps-bin/$n"
           done
-          /opt/xbps-bin/xbps-uhelper version || true
+          /opt/xbps-bin/xbps-uhelper version
           echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-bin" >> "$GITHUB_ENV"
 
       - name: Bootstrap xbps-src
