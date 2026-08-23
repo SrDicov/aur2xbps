@@ -69,8 +69,19 @@ def nix_version() -> str | None:
 
 
 def sudo_prefix() -> list[str]:
-    """Prefijo de privilegios: [] si somos root; ['sudo'] en otro caso."""
+    """Prefijo de privilegios: [] si somos root; si no, el elevador
+    disponible. Void Linux trae doas (no sudo) — detectar en orden
+    $AUR2XBPS_PRIV → sudo → doas; error claro si no hay ninguno."""
     import os
+    import shutil as _sh
     if os.getuid() == 0:
         return []
-    return ["sudo"]
+    forced = os.environ.get("AUR2XBPS_PRIV")
+    if forced:
+        return [forced]
+    for tool in ("sudo", "doas"):
+        if _sh.which(tool):
+            return [tool]
+    raise FileNotFoundError(
+        "sin sudo ni doas en PATH y no somos root: instala doas o exporta "
+        "AUR2XBPS_PRIV=<elevador>")
