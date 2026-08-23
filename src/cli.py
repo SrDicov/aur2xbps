@@ -247,7 +247,7 @@ def _build_with_nix(pkgname: str) -> int:
     transpile(pr.srcinfo, out_dir)
     ok, msg = build_with_hash_fix(out_dir, pkgname, timeout=max(cfg.build_timeout, 1800))
     if not ok:
-        _die(f"nix build falló: {msg[:400]}", 6)
+        _die(f"nix build falló: …{msg[-400:]}", 6)
     pkg0 = next(iter(pr.srcinfo.packages.values()))
     pkgver = f"{pkgname}-{pkg0.pkgver}_{pkg0.pkgrel}"
     res = full_pipeline(out_dir / "result", pkgname, pkgver,

@@ -967,6 +967,12 @@ def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 2,
         if r.returncode == 0:
             return True, "build OK"
         combined = r.stdout + r.stderr
+        # post-mortem: log íntegro junto al flake (el mensaje CLI solo
+        # conserva la cola)
+        try:
+            (out_dir / "nix-build.log").write_text(combined[-200_000:])
+        except OSError:
+            pass
         m = HASH_MISMATCH_RE.search(combined)
         if not m:
             return False, (combined[-2000:] or "error desconocido")
