@@ -117,6 +117,9 @@ class Config:
     restricted_mode: bool = True        # bloquear empaquetado de no-redistribuibles
     offline: bool = False               # solo caché local, sin red
     build_timeout: int = 3600           # techo duro por compilación (segundos)
+    # [nixpkgs_pins] pkgbase → ref de nixpkgs (flake input) para casos de
+    # incompatibilidad ABI upstream (ej. paru+libalpm v15 → rev con pacman 6.x).
+    nixpkgs_pins: Dict[str, str] = field(default_factory=dict)
     # [security] claves PGP de mantenedores AUR de confianza (H-2.2): la
     # intersección con validpgpkeys del .SRCINFO habilita exenciones del
     # filtro JS con cadena de custodia real.
@@ -209,6 +212,9 @@ def _apply_toml(cfg: Config, path: Path) -> None:
     for section, values in raw.items():
         if not isinstance(values, dict):
             continue
+        if section == "nixpkgs_pins":
+            cfg.nixpkgs_pins.update({str(k): str(v) for k, v in values.items()})
+            continue
         for k, v in values.items():
             if k not in known:
                 continue
@@ -228,6 +234,7 @@ def _apply_toml(cfg: Config, path: Path) -> None:
 def _apply_env(cfg: Config) -> None:
     env_map = {
         "AUR2XBPS_DATA_DIR": "data_dir",
+        "AUR2XBPS_ROOT": "data_dir",         # compat documentada (AGENTS.md)
         "AUR2XBPS_CACHE_DIR": "cache_dir",
         "AUR2XBPS_REPO_DIR": "repo_dir",
         "AUR2XBPS_KEYS_DIR": "keys_dir",

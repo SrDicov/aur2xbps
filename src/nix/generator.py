@@ -930,9 +930,25 @@ def lint_flake_patchelf(flake_path: Path) -> List[str]:
     return lint_fixupPhase(flake_path.read_text())
 
 
+def resolve_nixos_ref(srcinfo: SrcInfo) -> str:
+    """Ref de nixpkgs para este paquete: pin por-paquete (config
+    [nixpkgs_pins]) > env AUR2XBPS_NIXOS_REF > NIXOS_REF global.
+
+    Los pins permiten fijar un rev histórico ante incompatibilidades ABI
+    upstream (ej. crate alpm exige libalpm v15 → rev con pacman 6.x).
+    """
+    import os as _os
+    from src.common.config import get_config
+    cfg = get_config()
+    for key in (srcinfo.pkgbase, getattr(srcinfo, "pkgname", None)):
+        if key and key in cfg.nixpkgs_pins:
+            return cfg.nixpkgs_pins[key]
+    return _os.environ.get("AUR2XBPS_NIXOS_REF") or NIXOS_REF
+
+
 def transpile(srcinfo: SrcInfo, out_dir: Path) -> Path:
     """API de alto nivel: genera flake + lock + lint. Lanza si lint falla."""
-    flake = generate_flake(srcinfo, out_dir)
+    flake = generate_flake(srcinfo, out_dir, nixos_ref=resolve_nixos_ref(srcinfo))
     errs = lint_flake_patchelf(flake)
     if errs:
         raise RuntimeError(f"Linter patchelf falló: {errs}")
