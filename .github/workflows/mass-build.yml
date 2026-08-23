@@ -1,0 +1,322 @@
+# Campaña masiva: muestreo reproducible del AUR → build dual (nix + xbps-src)
+# en shards paralelos; cada shard sube sus resultados y un job final fusiona
+# el reporte. Sin secretos: clave RSA efímera por runner.
+name: aur2xbps campaign
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed numérica (vacío → run_id como seed)"
+        type: string
+        required: false
+        default: ""
+      count:
+        description: "Total de paquetes a muestrear (mitad -bin, mitad fuente)"
+        type: string
+        required: false
+        default: "100"
+      shards:
+        description: "Número de shards paralelos"
+        type: string
+        required: false
+        default: "10"
+      engines:
+        description: "Motor(es) de build"
+        type: choice
+        required: false
+        default: both
+        options: [both, nix, xbps-src]
+      timeout_min:
+        description: "Minutos por paquete+motor"
+        type: string
+        required: false
+        default: "40"
+      only:
+        description: "Paquetes concretos separados por espacio (ignora seed/count)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan de campaña
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      seed-final: ${{ steps.plan.outputs.seed-final }}
+      shards-list: ${{ steps.plan.outputs.shards-list }}
+      shards-final: ${{ steps.plan.outputs.shards-final }}
+      count-final: ${{ steps.plan.outputs.count-final }}
+      timeout-final: ${{ steps.plan.outputs.timeout-final }}
+    steps:
+      - name: Calcular seed y shards
+        id: plan
+        env:
+          SEED_IN: ${{ inputs.seed }}
+          SHARDS_IN: ${{ inputs.shards }}
+          COUNT_IN: ${{ inputs.count }}
+          TIMEOUT_IN: ${{ inputs.timeout_min }}
+          ENGINES_IN: ${{ inputs.engines }}
+          ONLY_IN: ${{ inputs.only }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [[ "$SEED_IN" =~ ^[0-9]+$ ]]; then SEED="$SEED_IN"; else SEED="$RUN_ID"; fi
+          if ! ([[ "$SHARDS_IN" =~ ^[0-9]+$ ]] && [ "$SHARDS_IN" -ge 1 ]); then SHARDS_IN=10; fi
+          if ! ([[ "$COUNT_IN" =~ ^[0-9]+$ ]] && [ "$COUNT_IN" -ge 1 ]); then COUNT_IN=100; fi
+          if ! ([[ "$TIMEOUT_IN" =~ ^[0-9]+$ ]] && [ "$TIMEOUT_IN" -ge 1 ]); then TIMEOUT_IN=40; fi
+          LIST="["
+          i=0
+          while [ "$i" -lt "$SHARDS_IN" ]; do
+            if [ "$i" -gt 0 ]; then LIST="$LIST,"; fi
+            LIST="${LIST}${i}"
+            i=$((i + 1))
+          done
+          LIST="${LIST}]"
+          {
+            echo "seed-final=$SEED"
+            echo "shards-list=$LIST"
+            echo "shards-final=$SHARDS_IN"
+            echo "count-final=$COUNT_IN"
+            echo "timeout-final=$TIMEOUT_IN"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## aur2xbps campaign · plan"
+            echo ""
+            echo "| parámetro | valor |"
+            echo "|-----------|-------|"
+            echo "| seed final | \`$SEED\` |"
+            echo "| shards | \`$SHARDS_IN\` |"
+            echo "| count | \`$COUNT_IN\` |"
+            echo "| engines | \`$ENGINES_IN\` |"
+            echo "| timeout_min | \`$TIMEOUT_IN\` |"
+            echo "| only | \`${ONLY_IN:-(vacío)}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Shard ${{ matrix.shard }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards-list) }}
+    env:
+      AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
+      AUR2XBPS_LOGS: /tmp/aur2xbps-logs
+      AUR2XBPS_VOID_DIR: ${{ github.workspace }}/common/void-packages
+      AUR2XBPS_MASTERDIR: /tmp/aur2xbps-workspace/void/masterdir
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Deps + workspace + clave RSA efímera
+        run: |
+          pip install httpx pyyaml
+          mkdir -p "$AUR2XBPS_ROOT/cache" "$AUR2XBPS_ROOT/sources" \
+                   "$AUR2XBPS_ROOT/repo" "$AUR2XBPS_ROOT/keys" \
+                   "$AUR2XBPS_LOGS" "$AUR2XBPS_MASTERDIR"
+          openssl genrsa -out "$AUR2XBPS_ROOT/keys/privkey.pem" 4096
+          chmod 600 "$AUR2XBPS_ROOT/keys/privkey.pem"
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = true
+
+      - name: xbps estáticos (mirror oficial de Void)
+        run: |
+          IDX=https://repo-default.voidlinux.org/static/
+          FILE=$(curl -sS "$IDX" | grep -oE 'xbps-static-static-[0-9._]+\.x86_64-musl\.tar\.gz' | sort -V | tail -1)
+          echo "descargando $FILE"
+          mkdir -p /opt/xbps-static
+          curl -fsSL "$IDX$FILE" | tar xz -C /opt/xbps-static
+          BIN_DIR=$(dirname "$(find /opt/xbps-static -name xbps-create | head -1)")
+          test -x "$BIN_DIR/xbps-rindex"
+          echo "AUR2XBPS_XBPS_BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
+
+      - name: Bootstrap xbps-src
+        if: inputs.engines != 'nix'
+        env:
+          XBPS_ALLOW_CHROOT_BREAKOUT: "1"
+        run: |
+          cd "$AUR2XBPS_VOID_DIR"
+          sudo -E ./xbps-src binary-bootstrap
+
+      - name: Validar shard ${{ matrix.shard }}
+        env:
+          SEED_FINAL: ${{ needs.plan.outputs.seed-final }}
+          COUNT: ${{ needs.plan.outputs.count-final }}
+          SHARDS: ${{ needs.plan.outputs.shards-final }}
+          TIMEOUT_MIN: ${{ needs.plan.outputs.timeout-final }}
+          SHARD: ${{ matrix.shard }}
+          ONLY: ${{ inputs.only }}
+          ENGINES: ${{ inputs.engines }}
+          AUR2XBPS_COPY_BINPKGS: "0"
+        run: |
+          OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
+          OUT_MD="results-shard-${SHARD}of${SHARDS}.md"
+          if [ -n "$ONLY" ]; then
+            ARGS="--only $(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s + 1' | tr '\n' ' ')"
+            echo "modo retry (only), slice del shard ${SHARD}"
+          else
+            ARGS="--count-total $COUNT --seed $SEED_FINAL --shard ${SHARD}/${SHARDS}"
+            echo "modo campaña, shard ${SHARD}/${SHARDS}"
+          fi
+          # shellcheck disable=SC2086
+          set +e
+          python3 scripts/mass-validate.py $ARGS \
+            --engine "$ENGINES" \
+            --timeout $((TIMEOUT_MIN * 60)) \
+            --out "$OUT_JSON" \
+            > "$AUR2XBPS_LOGS/shard-${SHARD}.stdout.log" \
+            2> "$AUR2XBPS_LOGS/shard-${SHARD}.stderr.log"
+          RC=$?
+          set -e
+          echo "mass-validate rc=$RC"
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::crash global en shard ${SHARD} (rc=${RC}), tail de stderr:"
+            tail -40 "$AUR2XBPS_LOGS/shard-${SHARD}.stderr.log" || true
+          fi
+          if [ -f "$OUT_MD" ]; then cat "$OUT_MD"; fi
+          exit 0
+
+      - name: Preparar staging del shard
+        if: always()
+        run: |
+          mkdir -p shard-out/logs shard-out/xbps/from-nix shard-out/xbps/from-xbps-src
+          cp results-shard-*.json results-shard-*.md shard-out/ 2>/dev/null || true
+          cp -a "$AUR2XBPS_LOGS"/. shard-out/logs/ 2>/dev/null || true
+          find "$AUR2XBPS_ROOT/repo" -name '*.xbps' \
+            -exec cp {} shard-out/xbps/from-nix/ \; 2>/dev/null || true
+          find "$AUR2XBPS_VOID_DIR/hostdir/binpkgs" -maxdepth 1 -name '*.xbps' \
+            -exec cp {} shard-out/xbps/from-xbps-src/ \; 2>/dev/null || true
+          echo "ficheros en staging: $(find shard-out -type f | wc -l)"
+
+      - name: Subir artefactos del shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: campaign-shard-${{ matrix.shard }}
+          path: shard-out
+          if-no-files-found: warn
+
+  report:
+    name: Reporte de campaña
+    needs: [plan, build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SEED_FINAL: ${{ needs.plan.outputs.seed-final }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bajar artefactos de shards
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: campaign-shard-*
+          merge-multiple: false
+          path: artifacts/
+
+      - name: Fusionar resultados
+        run: |
+          python3 - <<'PY'
+          import glob
+          import json
+          import os
+
+          results = {}
+          for path in sorted(glob.glob("artifacts/*/results-shard-*.json")):
+              try:
+                  with open(path) as fh:
+                      data = json.load(fh)
+              except Exception as exc:
+                  print(f"aviso: {path} ilegible: {exc}")
+                  continue
+              if isinstance(data, dict):
+                  results.update(data)
+
+          blocked_extra = results.pop("@blocked", [])
+          pkgs = {k: v for k, v in results.items() if isinstance(v, dict)}
+
+          ok = sorted(k for k, v in pkgs.items() if v.get("ok"))
+          fails = {k: v for k, v in pkgs.items() if not v.get("ok")}
+          blocked = [
+              k for k, v in fails.items()
+              if any(e.get("detail", "").startswith("bloqueado")
+                     for e in v.get("engines", {}).values())
+          ]
+          causes = {}
+          for k, v in fails.items():
+              if k in blocked:
+                  continue
+              for eng, e in v.get("engines", {}).items():
+                  if not e.get("ok"):
+                      c = e.get("detail") or v.get("crash") or "desconocido"
+                      causes.setdefault(c[:60], []).append(f"{k} [{eng}]")
+
+          with open("campaign-results.json", "w") as fh:
+              json.dump({"packages": pkgs, "blocked": blocked_extra},
+                        fh, indent=2, sort_keys=True)
+
+          with open("failed-only.txt", "w") as fh:
+              fh.write(" ".join(sorted(k for k in fails if k not in blocked)) + "\n")
+
+          total = len(pkgs)
+          rate = 100 * len(ok) / total if total else 0.0
+          lines = [
+              "# aur2xbps campaign · reporte",
+              "",
+              f"- Seed final: `{os.environ.get('SEED_FINAL', '?')}`",
+              f"- Evaluados: {total} · OK: {len(ok)} · "
+              f"Fallo: {len(fails) - len(blocked)} · Bloqueados: {len(blocked) + len(blocked_extra)}",
+              f"- Tasa OK (no bloqueados): {rate:.1f}%",
+              "",
+              "## Causas raíz agrupadas",
+              "",
+          ]
+          if causes:
+              lines += ["| causa raíz | × | paquetes |", "|---|---|---|"]
+              for c, pkgs in sorted(causes.items(), key=lambda kv: -len(kv[1])):
+                  lines.append(f"| `{c}` | {len(pkgs)} | {', '.join(pkgs[:8])} |")
+          else:
+              lines.append("(sin fallos)")
+          report = "\n".join(lines) + "\n"
+          with open("campaign-report.md", "w") as fh:
+              fh.write(report)
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write(report)
+          print(report)
+          PY
+
+      - name: Subir reporte de campaña
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: campaign-report
+          path: |
+            campaign-results.json
+            campaign-report.md
+            failed-only.txt
+          if-no-files-found: warn
