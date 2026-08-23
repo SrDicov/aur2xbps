@@ -7,6 +7,7 @@ Receta determinista TRH-validada en Fase 0:
 """
 from __future__ import annotations
 import hashlib
+import os
 import sys
 import subprocess
 from dataclasses import dataclass, field
@@ -189,6 +190,22 @@ def _require_tools() -> None:
             + " (en Void: xbps-install -y file binutils patchelf)")
 
 
+def verify_patched_elf(path: str) -> None:
+    """Oráculo post-patchelf (H-4.1): patchelf con secciones no convencionales
+    puede corromper el ELF silenciosamente. ldd debe leer el binario sin
+    fallar; libs "not found" son tolerables (resuelven en el chroot Void vía
+    shlibs). Lanza RuntimeError ante corrupción o cuelgue."""
+    try:
+        subprocess.run(["ldd", path], capture_output=True, text=True,
+                       timeout=60, check=True)
+    except subprocess.CalledProcessError as e:
+        tail = ((e.stdout or "") + (e.stderr or ""))[-300:]
+        raise RuntimeError(
+            f"patchelf corrompió {path} (ldd exit {e.returncode}): {tail}") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"ldd colgado en {path}: ELF posiblemente corrupto") from e
+
+
 def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
     """Re-parchea ELFs del Nix store al intérprete/libras de Void.
     Orden mandatorio: rpath ($ORIGIN primero) ANTES que interpreter, separados."""
@@ -222,6 +239,9 @@ def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
         refs_nix = "/nix/store" in d_out
         if not interp_nix and not refs_nix:
             continue
+        # Guardar modo original: chmod +w es temporal, se restaura tras parchear
+        # (H-4.1: sin restauración, las libs quedaban 0644+w → drift en stage)
+        orig_mode = os.stat(f).st_mode & 0o777
         _run(["chmod", "+w", f])
         # 1) rpath primero
         _run(["patchelf", "--set-rpath", "$ORIGIN:/usr/lib:/usr/lib64", f])
@@ -231,6 +251,10 @@ def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
             # Normalización de modo: ELF ejecutable siempre 0755
             # (zips/tars upstream pueden perder el bit x; root lo enmascara vía DAC_OVERRIDE)
             _run(["chmod", "755", f])
+        else:
+            _run(["chmod", oct(orig_mode)[2:], f])
+        # 3) Oráculo post-escritura (H-4.1): detecta corrupción inmediata
+        verify_patched_elf(f)
         patched += 1
     return patched
 

@@ -22,9 +22,9 @@ def XBPS_CREATE() -> str:  # noqa: N802 — API histórica, resuelve en runtime
 def XBPS_RINDEX() -> str:  # noqa: N802
     return find_xbps_tool("xbps-rindex")
 
-def _run(cmd: List[str], env: dict | None = None):
+def _run(cmd: List[str], env: dict | None = None, timeout: int = 600):
     print("$", " ".join(cmd))
-    subprocess.run(cmd, check=True, env=env)
+    subprocess.run(cmd, check=True, env=env, timeout=timeout)
 
 def create_xbps(
     stage_dir: Path,

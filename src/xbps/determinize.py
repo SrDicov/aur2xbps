@@ -72,13 +72,22 @@ def determinize_xbps(xbps_path: Path, zstd_level: int = 3,
     Sobrescribe el original. Retorna (path, sha256_nuevo)."""
     xbps_path = Path(xbps_path)
     raw = subprocess.run([zstd_bin, "-dc", str(xbps_path)],
-                         capture_output=True, check=True).stdout
+                         capture_output=True, check=True, timeout=600).stdout
     fixed = determinize_tar(raw)
     tmp = xbps_path.with_suffix(".xbps.det")
     with open(tmp, "wb") as fh:
-        p = subprocess.Popen([zstd_bin, "-T1", f"-{zstd_level}", "-q"], stdin=subprocess.PIPE,
-                             stdout=fh)
-        p.communicate(fixed)
+        p = subprocess.Popen([zstd_bin, "-T1", f"-{zstd_level}", "-q"],
+                             stdin=subprocess.PIPE, stdout=fh)
+        try:
+            # Techo duro (T-6): zstd colgado bloqueaba el pipeline para siempre
+            p.communicate(fixed, timeout=300)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
+            raise RuntimeError(
+                f"zstd no terminó en 300s recomprimiendo {xbps_path}")
+    if p.returncode != 0:
+        raise RuntimeError(f"zstd falló ({p.returncode}) con {xbps_path}")
     sha = hashlib.sha256(tmp.read_bytes()).hexdigest()
     tmp.rename(xbps_path)
     return xbps_path, sha

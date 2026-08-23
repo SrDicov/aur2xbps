@@ -821,9 +821,12 @@ def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 2,
     out_dir = Path(out_dir)
     flake = out_dir / "flake.nix"
     last_err = ""
+    # Sistema del attr derivado de la arch configurada (T-3: nunca hardcodear
+    # x86_64-linux; un override AUR2XBPS_ARCH sin esto era ignorado al compilar)
+    system = nix_system(get_config().arch)
     for attempt in range(max_retries + 1):
         r = subprocess.run(
-            ["nix", "build", f".#packages.x86_64-linux.{attr}",
+            ["nix", "build", f".#packages.{system}.{attr}",
              "--extra-experimental-features", "nix-command flakes",
              "--option", "sandbox", "true"],
             cwd=out_dir, capture_output=True, text=True, timeout=timeout)

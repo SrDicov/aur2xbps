@@ -116,6 +116,7 @@ class Config:
     log_level: str = "INFO"
     restricted_mode: bool = True        # bloquear empaquetado de no-redistribuibles
     offline: bool = False               # solo caché local, sin red
+    build_timeout: int = 3600           # techo duro por compilación (segundos)
 
     # ---- derivadas (no configurables) ----
     @property
@@ -254,6 +255,11 @@ def _apply_env(cfg: Config) -> None:
         cfg.restricted_mode = False
     if os.environ.get("AUR2XBPS_PYTHON_VERSION"):
         cfg.python_version = os.environ["AUR2XBPS_PYTHON_VERSION"]
+    if os.environ.get("AUR2XBPS_BUILD_TIMEOUT"):
+        try:
+            cfg.build_timeout = int(os.environ["AUR2XBPS_BUILD_TIMEOUT"])
+        except ValueError:
+            pass
 
 
 def _resolve_derived(cfg: Config) -> None:
