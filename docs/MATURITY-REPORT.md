@@ -66,3 +66,24 @@ broken-upstream con causa documentada.
 | 4 | `316f7f2` | hermeticidad symlinks + TRH canónico |
 | 5 | `2098a8a` | redacción secretos + servidor endurecido |
 | 6 | (este) | harness masivo dual-engine + docs |
+
+## Adenda (sesión Nix en PC local, ago 2026)
+
+Errores reportados por el usuario (`paru`, `yay`, `yazi`, `yazi-bin`,
+`brave-bin`, `neofetch`, `ventoy-bin`) → causas raíz y fixes:
+
+| Causa raíz | Fix |
+|------------|-----|
+| Soname Arch crudo (`libalpm.so`) como attr Nix → eval error | normalización `.so*` pre-mapeo + `libalpm→pacman` |
+| Sin ecosistemas cargo/go | plantillas `DERIV_CARGO`/`DERIV_GO` + `HASH_DUMMY` autocorregido |
+| RPC cacheaba respuestas vacías para siempre (yazi borrado de AUR; yazi-bin envenenado) | no cachear 0-resultados + GC purga |
+| Smoke con rutas hardcodeadas (restos chrome/code) → fallos fantasma | `_stage_smoke_candidates()` derivado del stage real |
+| VCS/SOURCE sin installPhase → `$out` vacío (.xbps 531B) | INSTALL_GUARD_PHASE anti-fantasma |
+| nixos-24.11 sin go≥1.26 (yay/paru) | pin `nixos-unstable` (lock fija rev) |
+
+E2E verdes post-fix: neofetch ✓ ventoy-bin ✓ brave-bin ✓
+(paru/yay pendientes de re-validación completa en PC destino).
+
+Infra local: Nix 2.35.2 single-user + store migrado a USB ext4 (56G,
+fstab persistente); bug `sudo_prefix()` hardcodeado detectado y arreglado
+(detección sudo|doas, commit 775f680).

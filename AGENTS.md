@@ -64,6 +64,11 @@ python3 -m src.nix.patchelf             # linter de flakes generados (standalone
 - **strip de stdenv corrompe binarios Go/precompilados**: `dontStrip = true` en template BIN; **autoPatchelfHook corrompe binarios Go** — no usarlo.
 - **`.SRCINFO` stale**: validar tag git vs pkgver; abortar si diverge.
 - **AUR RPC v5**: URI ≤4443 bytes, batch ≤200, rate 4000/día/IP. Cache SQLite + offline mode.
+- **RPC nunca cachea 0-resultados**: un paquete borrado/parpadeo de AUR quedaría "no existe" para siempre en caché (caso yazi-bin). GC purga entradas envenenadas previas.
+- **Sonames Arch no existen en nixpkgs**: `libalpm.so>13` → normalizar sufijo `.so*` ANTES de mapear (attr real: `pacman`). Sin esto la evaluación del flake revienta.
+- **Ecosistemas cargo/go**: `buildRustPackage` usa `cargoHash` (vendorHash es de buildGoModule); placeholder `HASH_DUMMY` auto-corregido con el hash que Nix reporta del FOD. Pin `nixos-unstable` (go≥1.26, rust nuevo) — el flake.lock fija el rev.
+- **Smoke sin hardcodear**: candidatos derivados del stage real (`_stage_smoke_candidates`) — rutas fijas (`/opt/google/chrome/chrome`) provocaban fallos fantasma.
+- **Paquete fantasma**: Makefiles que instalan a /usr en silencio dejan `$out` VACÍO (.xbps de ~500B). INSTALL_GUARD_PHASE aborta si no hay binarios.
 - **Atomic Arch**: bloquear solo maliciosos exactos + npm/bun install sin hash (salvo allowlist JS). No bloquear todo npm/bun.
 - **buildFHSEnv**: solo `-bin`. PKG_CONFIG_PATH rompe aislamiento.
 - **TRH cross-host**: libarchive escribe uname/gname como STRING cuando getpwuid resuelve → hash varía entre hosts. `determinize_xbps()` obligatorio.
