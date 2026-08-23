@@ -70,6 +70,30 @@ DERIVATION_BIN = '''
               find . -maxdepth 3 -type f -name "*.so*" -exec sh -c \\
                 'file "$1" | grep -q "ELF" && cp "$1" $out/lib/' _ {{}} \\; 2>/dev/null || true
             fi
+            # H-3.1: symlinks absolutos preservados del upstream apuntan al
+            # filesystem del host (ej. /etc/shadow) o quedan rotos bajo $out.
+            # Relativizarlos a la jerarquía contenida; irrecuperables → fuera.
+            find "$out" -type l | while IFS= read -r _l; do
+              _t=$(readlink "$_l")
+              case "$_t" in
+                /*)
+                  _cand="$out$_t"
+                  if [ -e "$_cand" ]; then
+                    _rel=$(realpath --relative-to "$(dirname "$_l")" "$_cand")
+                    ln -sfn "$_rel" "$_l"
+                  else
+                    echo "aur2xbps: symlink absoluto roto eliminado: $_l -> $_t"
+                    rm -f "$_l"
+                  fi
+                  ;;
+                *)
+                  if [ ! -e "$_l" ]; then
+                    echo "aur2xbps: symlink relativo roto eliminado: $_l -> $_t"
+                    rm -f "$_l"
+                  fi
+                  ;;
+              esac
+            done
             find $out -exec touch -h -d @0 {{}} +
           '';
           # Sin patchelf en sandbox: los binarios quedan PRISTINOS desde upstream.

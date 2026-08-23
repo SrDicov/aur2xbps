@@ -113,12 +113,16 @@ def main():
                             and n not in ARCH_TO_NIX)[: args.limit]
 
     added = 0
+    http_errors = 0   # H-3.2: solo degradar a oráculo si Repology INACCESIBLE
     with httpx.Client(timeout=30, headers=HEADERS, follow_redirects=True) as client:
         for i, name in enumerate(candidates):
             try:
                 got = fetch_project(name, client)
             except httpx.HTTPStatusError as e:
-                print(f"[{i+1}/{len(candidates)}] {name}: HTTP {e.response.status_code}")
+                status = e.response.status_code
+                print(f"[{i+1}/{len(candidates)}] {name}: HTTP {status}")
+                if status in (403, 404, 429):
+                    http_errors += 1
                 time.sleep(2)
                 continue
             except Exception as e:
@@ -133,12 +137,16 @@ def main():
                     print(f"✅ {k} → {v}")
             time.sleep(0.7)  # cortesía rate-limit repology (~10 req/min recomendado)
 
-    if added == 0:
-        # Degradación elegante: Repology restringe acceso automatizado (403/404).
-        # Fallback: oráculo nixpkgs offline → registra attrs válidos directos.
-        print("Repology no accesible; usando oráculo nixpkgs offline…")
+    if added == 0 and candidates and http_errors >= len(candidates):
+        # Degradación elegante SOLO ante inaccesibilidad total (403/404/429 en
+        # todos los intentos). Un éxito parcial o cero-mapeos con API viva NO
+        # debe disparar la cascada de nix eval (H-3.2).
+        print(f"Repology inaccesible ({http_errors}/{len(candidates)} errores HTTP); "
+              "usando oráculo nixpkgs offline…")
         table.update(offline_oracle(candidates))
         added = sum(1 for k, v in table.items() if k == v)
+    elif added == 0:
+        print("Sin mapeos nuevos y Repology accesible: no se requiere oráculo offline.")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(table, indent=2, sort_keys=True))

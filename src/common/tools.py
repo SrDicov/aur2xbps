@@ -39,6 +39,23 @@ def has_nix() -> bool:
     return shutil.which("nix") is not None
 
 
+@lru_cache(maxsize=None)
+def find_tool(name: str, env_var: str | None = None) -> str:
+    """Resolución genérica de binarios no-xbps con override opcional por env
+    (p.ej. AUR2XBPS_ZSTD para pinear un zstd concreto y blindar el TRH)."""
+    if env_var:
+        override = os.environ.get(env_var)
+        if override and Path(override).is_file():
+            return override
+    which = shutil.which(name)
+    if which:
+        return which
+    raise FileNotFoundError(
+        f"{name} no encontrado en PATH"
+        + (f" ni vía {env_var}" if env_var else "")
+        + "; instálalo o exporta la variable de override")
+
+
 def nix_version() -> str | None:
     if not has_nix():
         return None

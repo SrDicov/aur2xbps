@@ -18,18 +18,37 @@ from pathlib import Path
 BLOCK = 512
 UNAME_OFF = 265   # offset uname en cabecera ustar
 GNAME_OFF = 297   # offset gname
+UID_OFF = 108     # offset uid numérico (8 bytes octal)
+GID_OFF = 116     # offset gid numérico (8 bytes octal)
+TYPEFLAG_OFF = 156
 CKSUM_OFF = 148
 CKSUM_END = 156   # exclusivo
 
 
 def _fix_header(block: bytearray) -> None:
-    """Cero uname/gname y recalcula checksum de una cabecera ustar."""
+    """Normaliza una cabecera ustar a estado canónico: uname/gname a NULs,
+    uid/gid numéricos a 0 (H-4.2: no depender del chown previo, que puede
+    fallar silenciosamente con check=False) y checksum recalculado."""
     block[UNAME_OFF:UNAME_OFF + 32] = b"\0" * 32
     block[GNAME_OFF:GNAME_OFF + 32] = b"\0" * 32
+    block[UID_OFF:UID_OFF + 8] = b"0000000\x00"
+    block[GID_OFF:GID_OFF + 8] = b"0000000\x00"
     block[CKSUM_OFF:CKSUM_END] = b" " * 8
     cksum = sum(block)
     octal = ("%06o\0 " % cksum).encode()
     block[CKSUM_OFF:CKSUM_OFF + 8] = octal
+
+
+def _is_pax_entry(block: bytearray) -> bool:
+    """Cabeceras pax (typeflag x/g o nombres PaxHeader/pax_global_header)
+    filtran metadatos volátiles del host (xattrs, ACLs, ctime): H-4.2 — se
+    eliminan para que el tar solo lleve ustar canónico."""
+    tf = block[TYPEFLAG_OFF:TYPEFLAG_OFF + 1]
+    if tf in (b"x", b"g"):
+        return True
+    name = bytes(block[0:100]).rstrip(b"\0")
+    return name == b"pax_global_header" or name.endswith(b"/PaxHeader") \
+        or b"/PaxHeader/" in name
 
 
 def determinize_tar(raw_tar: bytes) -> bytes:
@@ -45,6 +64,15 @@ def determinize_tar(raw_tar: bytes) -> bytes:
         if block == bytes(BLOCK):          # fin de archivo (bloques cero)
             out += raw_tar[pos:]           # preservar padding final tal cual
             break
+        if _is_pax_entry(block):
+            # saltar cabecera pax + su payload (metadatos volátiles del host)
+            size_field = block[124:136].rstrip(b"\0 ")
+            try:
+                size = int(size_field, 8) if size_field else 0
+            except ValueError:
+                size = 0
+            pos += BLOCK + (size + BLOCK - 1) // BLOCK * BLOCK
+            continue
         hdr_name = block[0:100].rstrip(b"\0")
         size_field = block[124:136].rstrip(b"\0 ")
         if hdr_name and size_field.startswith(b"0") or size_field.isdigit():
@@ -67,10 +95,16 @@ def determinize_tar(raw_tar: bytes) -> bytes:
 
 
 def determinize_xbps(xbps_path: Path, zstd_level: int = 3,
-                     zstd_bin: str = "zstd") -> tuple[Path, str]:
+                     zstd_bin: str | None = None) -> tuple[Path, str]:
     """Lee un .xbps, normaliza su tar interno y lo recomprime determinista.
-    Sobrescribe el original. Retorna (path, sha256_nuevo)."""
+    Sobrescribe el original. Retorna (path, sha256_nuevo).
+
+    zstd_bin: None → resolución vía find_tool('zstd', AUR2XBPS_ZSTD) para
+    permitir pinear una versión concreta (H-4.2: sub-versiones de zstd
+    cambian heurísticas de compresión y rompen la identidad byte a byte)."""
+    from src.common.tools import find_tool
     xbps_path = Path(xbps_path)
+    zstd_bin = zstd_bin or find_tool("zstd", "AUR2XBPS_ZSTD")
     raw = subprocess.run([zstd_bin, "-dc", str(xbps_path)],
                          capture_output=True, check=True, timeout=600).stdout
     fixed = determinize_tar(raw)
