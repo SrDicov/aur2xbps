@@ -280,6 +280,9 @@ jobs:
       - name: Bootstrap xbps-src (contenedor nativo)
         run: |
           cd "$AUR2XBPS_VOID_DIR"
+          ls -la xbps-src || echo "::error::xbps-src ausente"
+          head -1 xbps-src 2>/dev/null || true
+          command -v bash >/dev/null || { echo "bash ausente: instalando"; xbps-install -Sy bash; }
           ./xbps-src -A x86_64 binary-bootstrap
 
       - name: Validar shard ${{ matrix.shard }} (xbps-src)
