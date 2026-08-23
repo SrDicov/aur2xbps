@@ -165,6 +165,20 @@ jobs:
           /opt/xbps-bin/xbps-create --version
           echo "AUR2XBPS_XBPS_BIN_DIR=/opt/xbps-bin" >> "$GITHUB_ENV"
 
+      - name: Bootstrap masterdir para smoke chroot
+        run: |
+          # chroot_install necesita un masterdir Void poblado; el smoke corre
+          # dentro (glibc nativo) y las ops de repo en host vía shims musl
+          export PATH="$AUR2XBPS_XBPS_BIN_DIR:$PATH"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          export AUR2XBPS_VOID_DIR="$(pwd)/common/void-packages"
+          export AUR2XBPS_MASTERDIR="$AUR2XBPS_VOID_DIR/masterdir-x86_64"
+          mkdir -p "$AUR2XBPS_MASTERDIR"
+          cd "$AUR2XBPS_VOID_DIR"
+          ./xbps-src -A x86_64 binary-bootstrap
+          echo "AUR2XBPS_VOID_DIR=$AUR2XBPS_VOID_DIR" >> "$GITHUB_ENV"
+          echo "AUR2XBPS_MASTERDIR=$AUR2XBPS_MASTERDIR" >> "$GITHUB_ENV"
+
       - name: Validar shard ${{ matrix.shard }} (nix)
         env:
           SEED_FINAL: ${{ needs.plan.outputs.seed-final }}

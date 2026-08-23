@@ -848,7 +848,8 @@ def _rpath_extra(arch: str) -> str:
 
 def generate_flake(srcinfo: SrcInfo, out_dir: Path,
                    nixos_ref: str = NIXOS_REF,
-                   eco_override: str | None = None) -> Path:
+                   eco_override: str | None = None,
+                   force_autoreconf: bool = False) -> Path:
     """Genera flake.nix con una derivación por subpaquete."""
     from src.common.config import get_config, nix_system as _nix_system
     out_dir = Path(out_dir)
@@ -926,7 +927,8 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
             if eco == "autotools":
                 md_names = [re.split(r"[<>=]", d)[0].strip()
                             for d in pkg.makedepends_for()]
-                needs_ar = any(x in md_names for x in ("automake", "autoconf", "libtool"))
+                needs_ar = force_autoreconf or any(
+                    x in md_names for x in ("automake", "autoconf", "libtool"))
                 fmt_kwargs["needs_autoreconf"] = str(needs_ar).lower()
             build_inputs_str = build_inputs or "glibc"
         drv = template.format(
@@ -1004,11 +1006,13 @@ def _dedupe_inputs(spec: str) -> str:
 
 
 def transpile(srcinfo: SrcInfo, out_dir: Path,
-              eco_override: str | None = None) -> Path:
+              eco_override: str | None = None,
+              force_autoreconf: bool = False) -> Path:
     """API de alto nivel: genera flake + lock + lint. Lanza si lint falla."""
     flake = generate_flake(srcinfo, out_dir,
                            nixos_ref=resolve_nixos_ref(srcinfo),
-                           eco_override=eco_override)
+                           eco_override=eco_override,
+                           force_autoreconf=force_autoreconf)
     errs = lint_flake_patchelf(flake)
     if errs:
         raise RuntimeError(f"Linter patchelf falló: {errs}")
