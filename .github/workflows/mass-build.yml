@@ -251,8 +251,8 @@ jobs:
     env:
       AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
       AUR2XBPS_LOGS: /tmp/aur2xbps-logs-xbps
-      AUR2XBPS_VOID_DIR: /void-packages
-      AUR2XBPS_MASTERDIR: /void-packages/masterdir-x86_64
+      AUR2XBPS_VOID_DIR: /__w/aur2xbps/aur2xbps/common/void-packages
+      AUR2XBPS_MASTERDIR: /__w/aur2xbps/aur2xbps/common/void-packages/masterdir-x86_64
       XBPS_ALLOW_CHROOT_BREAKOUT: "1"
       AUR2XBPS_COPY_BINPKGS: "0"
     steps:
@@ -274,8 +274,8 @@ jobs:
                    "$AUR2XBPS_ROOT/repo" "$AUR2XBPS_ROOT/keys" "$AUR2XBPS_LOGS"
           openssl genrsa -out "$AUR2XBPS_ROOT/keys/privkey.pem" 4096
           chmod 600 "$AUR2XBPS_ROOT/keys/privkey.pem"
-          # el checkout vive fuera de AUR2XBPS_VOID_DIR: enlazamos al árbol
-          ln -sfn "$(pwd)/common/void-packages" /void-packages
+          # NOTA: NO usar /void-packages como ruta — la imagen ya trae ese
+          # directorio propio y el enlace caería dentro (xbps-src not found)
 
       - name: Bootstrap xbps-src (contenedor nativo)
         run: |
