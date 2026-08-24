@@ -580,7 +580,7 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
                 "",
                 "# make_install_args puede necesitar PREFIX=/usr",
                 'make_install_args="PREFIX=/usr"',
-                '# make_build_args="CC=${CC} CFLAGS=${CFLAGS} LDFLAGS=${LDFLAGS}"',
+                'make_build_args="CC=${CC} CFLAGS=${CFLAGS} LDFLAGS=${LDFLAGS}"',
             ]
         elif build_style == "meta":
             lines.append("# paquete meta: solo depends, sin build")

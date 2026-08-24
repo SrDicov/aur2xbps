@@ -29,7 +29,7 @@ MANUAL: dict[str, str | None] = {
     "python-build": "python3-build", "python-installer": "python3-installer",
     "python-setuptools-scm": "python3-setuptools_scm",
     # gtk / gui
-    "gtk3": "gtk+3", "gtk4": "gtk+4", "gtk2": "gtk+2",
+    "gtk3": "gtk+3", "gtk4": "gtk4", "gtk2": "gtk+2",
     "glib2": "glib-devel", "gobject-introspection": "gobject-introspection",
     "libnotify": "libnotify", "libx11": "libX11-devel",
     "libxext": "libXext-devel", "libxrandr": "libXrandr-devel",
@@ -67,6 +67,14 @@ MANUAL: dict[str, str | None] = {
     "sh4": "dash",
     "systemd": None,
     "systemd-libs": None,
+    # deps que fallaron en campaña 100-pkg v2
+    "ImageMagick": "ImageMagick",
+    "imagemagick": "ImageMagick",
+    "arpack": "arpack",
+    "fuse2": "fuse2",
+    "fuse3": "fuse3",
+    "getoptions": "getoptions",
+    "cosmic-applets": "cosmic-applets",
     # sin equivalente en Void: metadatos LSB, ninguna app los necesita en runtime
     "lsb-release": None,
     # systemd no existe en Void (runit+eudev); los Electron la cargan por

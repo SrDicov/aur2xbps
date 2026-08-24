@@ -470,7 +470,7 @@ DERIV_AUTOTOOLS = """
             url = "{url}";
             {hash_attr} = "{hash_val}";
           }};
-          nativeBuildInputs = with pkgs; [ file pkg-config python3 gnome-common {native_inputs} ]
+          nativeBuildInputs = with pkgs; [ file pkg-config python3 gnome-common glib libtool automake {native_inputs} ]
             ++ pkgs.lib.optionals ({needs_autoreconf}) [ autoreconfHook scdoc ];
           buildInputs = with pkgs; [ {build_inputs} ];
           strictDeps = true;
