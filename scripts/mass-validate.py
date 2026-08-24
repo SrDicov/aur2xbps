@@ -31,6 +31,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -124,14 +125,22 @@ def run_cli(args: list[str], timeout: int, pkg: str = "", engine: str = "",
     cmd = [sys.executable, "-m", "src.cli"] + args
     env = dict(os.environ)
     env["AUR2XBPS_BUILD_TIMEOUT"] = str(timeout)
+    # start_new_session: el CLI lidera su propio grupo de procesos; al
+    # expirar el timeout killpg mata TAMBIÉN a los nietos (chroot/bash de
+    # xbps-src) que si no retienen los pipes y communicate() cuelga eterno
+    proc = subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=env,
+                            start_new_session=True)
     try:
-        r = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True,
-                           timeout=timeout + 120, env=env)
-        out_txt, err_txt, rc = r.stdout or "", r.stderr or "", r.returncode
-    except subprocess.TimeoutExpired as e:
-        out_txt = _as_text(getattr(e, "stdout", None))
-        err_txt = _as_text(getattr(e, "stderr", None))
-        err_txt += f"\ntimeout global {timeout + 120}s\n"
+        out_txt, err_txt = proc.communicate(timeout=timeout + 120)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        out_txt, err_txt = proc.communicate()
+        err_txt += f"\ntimeout global {timeout + 120}s (grupo killed)\n"
         rc = 124
     _save_logs(logdir, pkg, engine, out_txt, err_txt)
     # stdout es SOLO el JSON del CLI (_StderrOnly manda el resto a stderr),
@@ -367,6 +376,11 @@ def main() -> int:
     from src.aur.client import AURClient
     client = AURClient(db_path=DEFAULT_DB)
 
+    # --only presente pero VACÍO (nargs='*' → []) es falsy: sin esta guardia
+    # caería al muestreo completo y un job lanzaría una campaña entera
+    if args.only is not None and not args.only:
+        print("cola vacía (--only sin nombres): nada que validar")
+        return 0
     if args.only:
         pool = [(p, "bin" if p.endswith("-bin") else "src") for p in args.only]
         quota_total = len(pool)

@@ -194,7 +194,15 @@ jobs:
           OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
           OUT_MD="results-shard-${SHARD}of${SHARDS}.md"
           if [ -n "$ONLY" ]; then
-            ARGS="--only $(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s + 1' | tr '\n' ' ')"
+            # OJO off-by-one: el resto posible es 0..n-1 → mapeo directo
+            # ("NR % n == s + 1" dejaba SIEMPRE vacío el último shard)
+            SLICE="$(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s' | tr '\n' ' ')"
+            if [ -z "${SLICE// /}" ]; then
+              echo "::warning::shard ${SHARD} sin paquetes tras el slicing"
+              exit 0
+            fi
+            ARGS="--only $SLICE"
+            echo "modo retry, shard ${SHARD}: $SLICE"
           else
             ARGS="--count-total $COUNT --seed $SEED_FINAL --shard ${SHARD}/${SHARDS}"
           fi
@@ -297,7 +305,15 @@ jobs:
           OUT_JSON="results-shard-${SHARD}of${SHARDS}.json"
           OUT_MD="results-shard-${SHARD}of${SHARDS}.md"
           if [ -n "$ONLY" ]; then
-            ARGS="--only $(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s + 1' | tr '\n' ' ')"
+            # OJO off-by-one: el resto posible es 0..n-1 → mapeo directo
+            # ("NR % n == s + 1" dejaba SIEMPRE vacío el último shard)
+            SLICE="$(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s' | tr '\n' ' ')"
+            if [ -z "${SLICE// /}" ]; then
+              echo "::warning::shard ${SHARD} sin paquetes tras el slicing"
+              exit 0
+            fi
+            ARGS="--only $SLICE"
+            echo "modo retry, shard ${SHARD}: $SLICE"
           else
             ARGS="--count-total $COUNT --seed $SEED_FINAL --shard ${SHARD}/${SHARDS}"
           fi

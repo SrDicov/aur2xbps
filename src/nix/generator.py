@@ -473,6 +473,7 @@ DERIV_AUTOTOOLS = """
           strictDeps = true;
           makeFlags = [ "PREFIX=$(out)" ];  # algunos Makefiles ignoran prefix por defecto
           dontStrip = true;
+{install_guard}
           postPatch = \''
             # Normaliza PREFIX hardcodeado /usr/local → $out
             if grep -q "/usr/local" Makefile 2>/dev/null; then
@@ -930,6 +931,8 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
                 needs_ar = force_autoreconf or any(
                     x in md_names for x in ("automake", "autoconf", "libtool"))
                 fmt_kwargs["needs_autoreconf"] = str(needs_ar).lower()
+                if needs_ar:
+                    fmt_kwargs["install_guard"] = AUTORECONF_ACLOCAL
             build_inputs_str = build_inputs or "glibc"
         drv = template.format(
             pkgname=pname,
@@ -938,7 +941,7 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
             hash_attr=hash_attr,
             hash_val=hash_val,
             hash_vendor=HASH_DUMMY,
-            install_guard="",
+            install_guard=fmt_kwargs.pop("install_guard", ""),
             build_inputs=_dedupe_inputs(build_inputs_str),
             native_inputs=_dedupe_inputs(native_inputs),
             pkgdesc=pkgdesc,
@@ -1036,6 +1039,20 @@ SPECIFIED_GOT_RE = re.compile(
 UNDEF_VAR_RE = re.compile(r"undefined variable '([A-Za-z0-9_.-]+)'")
 # Attr que existe pero lanza (ej. python2): mismo tratamiento
 REMOVED_RE = re.compile(r"([\w][\w.-]*)\s*=\s*throw \"[^\"]*has been removed")
+
+
+# macros .m4 de dependencias (AM_GLIB_GNU_GETTEXT, PKG_PROG_PKG_CONFIG…)
+# viven en <dep>/share/aclocal y aclocal NO las descubre solo. Texto FINAL
+# de nix (sin pasar por .format: shell ${..} chocaría con las llaves).
+AUTORECONF_ACLOCAL = """          # recolecta macros .m4 de los inputs
+          preAutoreconf = pkgs.lib.optionalString true ''
+            for d in $buildInputs $nativeBuildInputs; do
+              if [ -d "$d/share/aclocal" ]; then
+                export ACLOCAL_PATH="''${ACLOCAL_PATH:+''${ACLOCAL_PATH}:}$d/share/aclocal"
+              fi
+            done
+          '';
+"""
 
 
 def _drop_undefined_var(flake_path: Path, name: str) -> bool:
