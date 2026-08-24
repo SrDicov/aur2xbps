@@ -197,7 +197,7 @@ jobs:
             # OJO off-by-one: el resto posible es 0..n-1 → mapeo directo
             # ("NR % n == s + 1" dejaba SIEMPRE vacío el último shard)
             SLICE="$(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s' | tr '\n' ' ')"
-            if [ -z "${SLICE// /}" ]; then
+            if [ -z "$(printf "%s" "$SLICE" | tr -d " ")" ]; then
               echo "::warning::shard ${SHARD} sin paquetes tras el slicing"
               exit 0
             fi
@@ -308,7 +308,7 @@ jobs:
             # OJO off-by-one: el resto posible es 0..n-1 → mapeo directo
             # ("NR % n == s + 1" dejaba SIEMPRE vacío el último shard)
             SLICE="$(printf '%s\n' $ONLY | sort | awk -v s="$SHARD" -v n="$SHARDS" 'NR % n == s' | tr '\n' ' ')"
-            if [ -z "${SLICE// /}" ]; then
+            if [ -z "$(printf "%s" "$SLICE" | tr -d " ")" ]; then
               echo "::warning::shard ${SHARD} sin paquetes tras el slicing"
               exit 0
             fi

@@ -180,6 +180,7 @@ ARCH_TO_NIX = {
     # utilidades CLI comunes en depends
     "git": "git", "gnupg": "gnupg", "lsof": "lsof", "which": "which",
     "libnotify": "libnotify", "libsecret": "libsecret",
+    "libxslt": "libxslt", "libxml2": "libxml2",
     "gnome-keyring": "gnome-keyring", "kwallet": "kwallet",
     "kdialog": "kdialog", "zenity": "zenity",
     "libdbusmenu-glib": "libdbusmenu-glib",
@@ -342,6 +343,8 @@ def pin_git_rev(repo_url: str, timeout: int = 60) -> str:
 
 def detect_ecosystem(pkg: SrcInfoPackage) -> str:
     md = " ".join(pkg.makedepends_for()).lower()
+    # Muchos paquetes Python listan python-setuptools etc. en DEPENDS (no makedepends)
+    all_dep_str = " ".join(pkg.makedepends_for() + pkg.depends_for()).lower()
     name = pkg.pkgname.lower()
     base = pkg.pkgbase.lower()
     if any(name.startswith(s) or base == s for s in ("dwm", "st", "slstatus", "sent", "slock")):
@@ -365,10 +368,10 @@ def detect_ecosystem(pkg: SrcInfoPackage) -> str:
         return "meson"
     if "cmake" in md:
         return "cmake"
-    if any(k in md for k in ("python-build", "python-installer", "poetry-core")):
+    if any(k in all_dep_str for k in ("python-build", "python-installer", "poetry-core")):
         return "python-pep517"
-    if any(k in md for k in ("python-setuptools", "python-wheel", "python-pip",
-                             "setuptools", "python-distribute")):
+    if any(k in all_dep_str for k in ("python-setuptools", "python-wheel", "python-pip",
+                                      "setuptools", "python-distribute")):
         return "python-legacy"
     return "autotools"
 
@@ -467,7 +470,7 @@ DERIV_AUTOTOOLS = """
             url = "{url}";
             {hash_attr} = "{hash_val}";
           }};
-          nativeBuildInputs = with pkgs; [ file pkg-config {native_inputs} ]
+          nativeBuildInputs = with pkgs; [ file pkg-config python3 {native_inputs} ]
             ++ pkgs.lib.optionals ({needs_autoreconf}) [ autoreconfHook scdoc ];
           buildInputs = with pkgs; [ {build_inputs} ];
           strictDeps = true;
@@ -475,6 +478,9 @@ DERIV_AUTOTOOLS = """
           dontStrip = true;
 {install_guard}
           postPatch = \''
+            # Muchos ./configure invocan "python" (no python3)
+            command -v python >/dev/null 2>&1 || ln -sf "$(command -v python3)" "$TMPDIR/python"
+            export PATH="$TMPDIR:$PATH"
             # Normaliza PREFIX hardcodeado /usr/local → $out
             if grep -q "/usr/local" Makefile 2>/dev/null; then
               substituteInPlace Makefile --replace-fail "/usr/local" "$(out)"
@@ -632,6 +638,11 @@ DERIV_NODEJS = """
           dontNpmBuild = true;
           # deps placeholder → auto-corregido en build (ver HASH_DUMMY)
           npmDepsHash = "{hash_vendor}";
+          postPatch = \'\'
+            # Algunos configure scripts invocan "python" (no python3)
+            command -v python >/dev/null 2>&1 || ln -sf "$(command -v python3)" "$TMPDIR/python"
+            export PATH="$TMPDIR:$PATH"
+          \'\';
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
             platforms = [ "{nix_system}" ];
@@ -928,11 +939,11 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
             if eco == "autotools":
                 md_names = [re.split(r"[<>=]", d)[0].strip()
                             for d in pkg.makedepends_for()]
-                needs_ar = force_autoreconf or any(
-                    x in md_names for x in ("automake", "autoconf", "libtool"))
+                # Muchos Makefiles invocan autoreconf internamente (ej. gnomato);
+                # siempre habilitar autoreconfHook para ecosistema autotools.
+                needs_ar = force_autoreconf or True
                 fmt_kwargs["needs_autoreconf"] = str(needs_ar).lower()
-                if needs_ar:
-                    fmt_kwargs["install_guard"] = AUTORECONF_ACLOCAL
+                fmt_kwargs["install_guard"] = AUTORECONF_ACLOCAL
             build_inputs_str = build_inputs or "glibc"
         drv = template.format(
             pkgname=pname,
