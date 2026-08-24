@@ -312,6 +312,9 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
         lines.append(f"# Template file for '{pname}'")
         lines.append(f'pkgname="{pname}"')
         ver = pkg.pkgver
+        # XBPS rechaza underscores en versiones; reemplazar con puntos
+        if "_" in ver:
+            ver = ver.replace("_", ".")
         lines.append(f'version="{ver}"')
         lines.append(f"revision={revision}")
         if build_style == "meta":
@@ -429,7 +432,7 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
                 '\t\t\t_lt=$(readlink "$_l")',
                 '\t\t\tcase "$_lt" in',
                 '\t\t\t\t*/share/${_rel}*)',
-                '\t\t\t\t\t_nt=$(printf "%s" "$_lt" | sed -e "s|\\.\./share/${_rel}|../lib/${_rel}|g" -e "s|/usr/share/${_rel}|/usr/lib/${_rel}|g")',
+                '\t\t\t\t\t_nt=$(printf "%s" "$_lt" | sed -e "s|\\.\\./share/${_rel}|../lib/${_rel}|g" -e "s|/usr/share/${_rel}|/usr/lib/${_rel}|g")',
                 '\t\t\t\t\tln -sfn "$_nt" "$_l"',
                 '\t\t\t\t\t;;',
                 '\t\t\tesac',

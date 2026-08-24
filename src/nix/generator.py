@@ -477,14 +477,19 @@ DERIV_AUTOTOOLS = """
           makeFlags = [ "PREFIX=$(out)" ];  # algunos Makefiles ignoran prefix por defecto
           dontStrip = true;
 {install_guard}
-          postPatch = \''
-            # Muchos ./configure invocan "python" (no python3)
-            command -v python >/dev/null 2>&1 || ln -sf "$(command -v python3)" "$TMPDIR/python"
-            export PATH="$TMPDIR:$PATH"
+          postPatch = \'\'
             # Normaliza PREFIX hardcodeado /usr/local → $out
             if grep -q "/usr/local" Makefile 2>/dev/null; then
               substituteInPlace Makefile --replace-fail "/usr/local" "$(out)"
             fi
+          \'\';
+          preBuild = \'\'
+            # Muchos ./configure invocan "python" (no python3)
+            command -v python >/dev/null 2>&1 || {{
+              mkdir -p "$TMPDIR"
+              ln -sf "$(command -v python3)" "$TMPDIR/python"
+              export PATH="$TMPDIR:$PATH"
+            }}
           \'\';
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
@@ -638,10 +643,13 @@ DERIV_NODEJS = """
           dontNpmBuild = true;
           # deps placeholder → auto-corregido en build (ver HASH_DUMMY)
           npmDepsHash = "{hash_vendor}";
-          postPatch = \'\'
+          preBuild = \'\'
             # Algunos configure scripts invocan "python" (no python3)
-            command -v python >/dev/null 2>&1 || ln -sf "$(command -v python3)" "$TMPDIR/python"
-            export PATH="$TMPDIR:$PATH"
+            command -v python >/dev/null 2>&1 || {{
+              mkdir -p "$TMPDIR"
+              ln -sf "$(command -v python3)" "$TMPDIR/python"
+              export PATH="$TMPDIR:$PATH"
+            }}
           \'\';
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
