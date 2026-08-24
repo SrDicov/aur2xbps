@@ -59,21 +59,31 @@ DERIVATION_BIN = '''
               *.deb) dpkg-deb --fsys-tarfile $src | tar -x --no-same-owner --no-same-permissions ;;
               *.rpm) rpm2cpio $src | cpio -idm --quiet ;;
               *.zip) unzip -q $src ;;
-              *)     tar -xf $src --no-same-owner --no-same-permissions 2>/dev/null || dpkg-deb -x $src . ;;
+              *.AppImage) chmod +x "$src" ;;
+              *)     
+                tar -xf "$src" --no-same-owner --no-same-permissions 2>/dev/null || \
+                dpkg-deb -x "$src" . 2>/dev/null || \
+                true  # archivo suelto (AppImage, binario suelto)
+                ;;
             esac
             runHook postUnpack
           '';
           installPhase = ''
-            mkdir -p $out
+            mkdir -p $out/usr/bin $out/usr/lib $out/opt
+            # AppImage / binario suelto
+            if [ -f "$src" ] && file "$src" | grep -q "ELF.*executable"; then
+              cp "$src" "$out/usr/bin/$(basename "${src%.*}")"
+            fi
+            # Estructura FHS estándar
             cp -a usr $out/ 2>/dev/null || true
             cp -a opt $out/ 2>/dev/null || true
             # zips/tars sin estructura FHS: solo ELF ejecutables y shared objects
             if [ ! -e $out/usr ] && [ ! -e $out/opt ]; then
-              mkdir -p $out/bin $out/lib
-              find . -maxdepth 3 -type f -exec sh -c \\
-                'file "$1" | grep -q "ELF.*executable" && cp "$1" $out/bin/' _ {{}} \\; 2>/dev/null || true
-              find . -maxdepth 3 -type f -name "*.so*" -exec sh -c \\
-                'file "$1" | grep -q "ELF" && cp "$1" $out/lib/' _ {{}} \\; 2>/dev/null || true
+              mkdir -p "$out/bin" "$out/lib"
+              find . -maxdepth 3 -type f -exec sh -c \
+                'file "$1" | grep -q "ELF.*executable" && cp "$1" "$out/bin/"' _ {} \; 2>/dev/null || true
+              find . -maxdepth 3 -type f -name "*.so*" -exec sh -c \
+                'file "$1" | grep -q "ELF" && cp "$1" "$out/lib/"' _ {} \; 2>/dev/null || true
             fi
             # H-3.1: symlinks absolutos preservados del upstream apuntan al
             # filesystem del host (ej. /etc/shadow) o quedan rotos bajo $out.
@@ -98,6 +108,9 @@ DERIVATION_BIN = '''
                   fi
                   ;;
               esac
+            done
+            find $out -exec touch -h -d @0 {} +
+          '';
             done
             find $out -exec touch -h -d @0 {{}} +
           '';
@@ -182,6 +195,15 @@ ARCH_TO_NIX = {
     "libnotify": "libnotify", "libsecret": "libsecret",
     "libxslt": "libxslt", "libxml2": "libxml2",
     "gnome-keyring": "gnome-keyring", "kwallet": "kwallet",
+    # R packages (nixpkgs usa rPackages.*)
+    "r-lazyeval": "rPackages.lazyeval",
+    "r-gridextra": "rPackages.gridextra",
+    "r-iranges": "rPackages.iranges",
+    "r-rcpp": "rPackages.Rcpp",
+    "r-dplyr": "rPackages.dplyr",
+    "r-tibble": "rPackages.tibble",
+    "r-readr": "rPackages.readr",
+    "r-tidyr": "rPackages.tidyr",
     "kdialog": "kdialog", "zenity": "zenity",
     "libdbusmenu-glib": "libdbusmenu-glib",
     "libdbusmenu-gtk3": "libdbusmenu-gtk3",
@@ -303,8 +325,14 @@ def _is_bin(pname: str, pkgbase: str, url: str) -> bool:
     if pname.endswith("-bin") or pkgbase.endswith("-bin"):
         return True
     low = url.lower()
-    return any(low.endswith(e) or e + "?" in low
-               for e in (".deb", ".rpm", ".appimage"))
+    # Extensiones binarias inequívocas
+    if any(low.endswith(e) or e + "?" in low
+           for e in (".deb", ".rpm", ".appimage")):
+        return True
+    # Patrones de releases GitHub con binarios: /releases/download/vX.Y.Z/binary
+    if "releases/download/" in low and not low.endswith((".tar.gz", ".tgz", ".tar.xz", ".zip", ".tar.bz2")):
+        return True
+    return False
 
 
 class VCSPackageError(RuntimeError):
@@ -957,7 +985,7 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
                 # siempre habilitar autoreconfHook para ecosistema autotools.
                 needs_ar = force_autoreconf or True
                 fmt_kwargs["needs_autoreconf"] = str(needs_ar).lower()
-                fmt_kwargs["install_guard"] = AUTORECONF_ACLOCAL
+                fmt_kwargs["install_guard"] = INSTALL_GUARD_PHASE
             build_inputs_str = build_inputs or "glibc"
         drv = template.format(
             pkgname=pname,
