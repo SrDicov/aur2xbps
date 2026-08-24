@@ -60,6 +60,13 @@ MANUAL: dict[str, str | None] = {
     "gcc-libs": "libstdc++",
     "libcurl-gnutls": "libcurl",  # Void solo trae curl OpenSSL; el generador crea el shim .so junto a la app
     "libsm": "libSM",
+    # deps comunes que faltaban en campaña 100-pkg
+    "r": "R",
+    "npm": "nodejs",
+    "sh": "dash",
+    "sh4": "dash",
+    "systemd": None,
+    "systemd-libs": None,
     # sin equivalente en Void: metadatos LSB, ninguna app los necesita en runtime
     "lsb-release": None,
     # systemd no existe en Void (runit+eudev); los Electron la cargan por
