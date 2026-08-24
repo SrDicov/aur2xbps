@@ -423,7 +423,7 @@ DERIV_CMAKE = """
             url = "{url}";
             {hash_attr} = "{hash_val}";
           }};
-          nativeBuildInputs = with pkgs; [ cmake ninja file {native_inputs} ];
+          nativeBuildInputs = with pkgs; [ cmake ninja file wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
@@ -453,7 +453,7 @@ DERIV_MESON = """
               *)     tar -xf $src --no-same-owner ;;
             esac
           '';
-          nativeBuildInputs = with pkgs; [ meson ninja pkg-config file {native_inputs} ];
+          nativeBuildInputs = with pkgs; [ meson ninja pkg-config file wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
@@ -621,6 +621,12 @@ DERIV_GO = """
           subPackages = [ "." ];
           # vendor placeholder → auto-corregido en build (ver HASH_DUMMY)
           vendorHash = "{hash_vendor}";
+          preBuild = \'\'
+            # Fix Go build cache permission denied in sandbox
+            export GOBUILDCACHE="$TMPDIR/go-build"
+            export GOCACHE="$TMPDIR/go-cache"
+            mkdir -p "$GOBUILDCACHE" "$GOCACHE"
+          \'\';
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
             platforms = [ "{nix_system}" ];
