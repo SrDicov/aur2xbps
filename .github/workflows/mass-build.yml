@@ -256,9 +256,9 @@ jobs:
       XBPS_ALLOW_CHROOT_BREAKOUT: "1"
       AUR2XBPS_COPY_BINPKGS: "0"
     steps:
-      - name: Git + certificados (requerido por checkout con submodules)
+      - name: Git + certificados + bash (requerido por checkout y xbps-src)
         run: |
-          xbps-install -Sy ca-certificates git
+          xbps-install -Sy ca-certificates git bash
           git --version
 
       - uses: actions/checkout@v4
