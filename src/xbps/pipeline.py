@@ -388,8 +388,12 @@ def chroot_install(pkgname: str) -> bool:
     CHROOT_LAST_ERR = ""
     r = _srun([XBPS_REMOVE(), "-r", str(MASTERDIR()), "-y", pkgname], timeout=300)
     _ensure_chroot_repos(MASTERDIR())
+    # --repository apunta al PADRE del subdirectorio de arch: xbps añade
+    # <arch>/repodata por sí solo; pasar repo_dir/<arch> directo busca
+    # <arch>/<arch>/repodata → "not found in repository pool"
+    cfg = get_config()
     r2 = _srun([XBPS_INSTALL(), "-r", str(MASTERDIR()),
-               f"--repository={REPO}", "-y", pkgname], timeout=900)
+               f"--repository={cfg.repo_dir}", "-y", pkgname], timeout=900)
     if r2.returncode == 0 and "installed successfully" in (r2.stdout + r2.stderr):
         return True
     CHROOT_LAST_ERR = ((r2.stdout or "") + (r2.stderr or ""))[-600:]
