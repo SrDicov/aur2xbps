@@ -194,6 +194,16 @@ def smoke_functional(xbps_path: Path, timeout: int = 20) -> dict:
         try:
             with tarfile.open(xbps_path, "r:zst") as tf:
                 tf.extractall(tmp, filter="data")     # anti-traversal (3.12+)
+        except tarfile.CompressionError:
+            # python <3.14 no integra zstd en tarfile: stream vía binario
+            zstd_bin = shutil.which("zstd")
+            if not zstd_bin:
+                return {"smoke": False, "reason": "zstd_no_disponible"}
+            with subprocess.Popen([zstd_bin, "-dc", str(xbps_path)],
+                                  stdout=subprocess.PIPE) as pz:
+                with tarfile.open(fileobj=pz.stdout, mode="r|") as tf:
+                    tf.extractall(tmp, filter="data")
+                pz.wait(timeout=timeout)
         except Exception as e:
             return {"smoke": False, "reason": f"xbps ilegible: {type(e).__name__}"}
         bin_dir = tmp / "usr" / "bin"

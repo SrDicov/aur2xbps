@@ -89,21 +89,36 @@ def test_void_interp_sigue_config(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------- deps base
 
+def _mock_xbps_tools(monkeypatch, pipeline, stdout: str, rc: int = 0):
+    # XBPS_QUERY() se evalúa ANTES de _srun: en runners sin xbps-tools
+    # resolvería FileNotFoundError antes de aplicar el mock → parchear ambos
+    monkeypatch.setattr(pipeline, "XBPS_QUERY", lambda: "xbps-query")
+    monkeypatch.setattr(pipeline, "_srun",
+                        lambda cmd, **kw: subprocess.CompletedProcess(
+                            cmd, rc, stdout=stdout, stderr=""))
+
+
 def test_base_dep_parse_masterdir(monkeypatch):
     from src.xbps import pipeline
     monkeypatch.setenv("AUR2XBPS_LIBC", "glibc")
-    monkeypatch.setattr(pipeline, "_srun",
-                        lambda cmd, **kw: subprocess.CompletedProcess(
-                            cmd, 0, stdout="glibc-2.42_1\n", stderr=""))
+    _mock_xbps_tools(monkeypatch, pipeline, "glibc-2.42_1\n")
     assert pipeline._base_dep() == "glibc>=2.42_1"
 
 
 def test_base_dep_floor_sin_query(monkeypatch):
     from src.xbps import pipeline
     monkeypatch.setenv("AUR2XBPS_LIBC", "musl")
-    monkeypatch.setattr(pipeline, "_srun",
-                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="x"))
+    _mock_xbps_tools(monkeypatch, pipeline, "x", rc=1)
     assert pipeline._base_dep() == "musl>=1.2.5"
+
+
+def test_base_dep_sin_herramientas_xbps(monkeypatch):
+    """Runner sin xbps instalado: floor, nunca excepción."""
+    from src.xbps import pipeline
+    monkeypatch.setenv("AUR2XBPS_LIBC", "glibc")
+    monkeypatch.setattr(pipeline, "XBPS_QUERY",
+                        lambda: (_ for _ in ()).throw(FileNotFoundError("no xbps")))
+    assert pipeline._base_dep().startswith("glibc>=")
 
 
 # ------------------------------------------------- generator y masterdir

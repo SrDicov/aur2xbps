@@ -65,6 +65,24 @@ def test_smoke_extrae_y_ejecuta_binario(mv, tmp_path):
     assert r["bin"] == "hello"
 
 
+def test_smoke_fallback_stream_zstd(mv, tmp_path, monkeypatch):
+    """python <3.14 sin tarfile-zstd: el stream vía binario zstd también
+    debe extraer y ejecutar (ruta del runner 3.11)."""
+    import tarfile as _tf
+    real_open = _tf.open
+
+    def fake_open(*args, **kw):
+        if kw.get("mode") == "r:zst":
+            raise _tf.CompressionError("zstd no integrado (simulado)")
+        return real_open(*args, **kw)
+
+    monkeypatch.setattr(_tf, "open", fake_open)
+    xbps = _make_xbps(tmp_path, {"usr/bin/hello": "#!/bin/sh\necho hi\n"})
+    r = mv.smoke_functional(xbps, timeout=15)
+    assert r["smoke"] is True, r
+    assert r["bin"] == "hello"
+
+
 def test_smoke_sigue_symlink_usr_bin(mv, tmp_path):
     # paquete estilo bundle: binario real en lib, enlace en usr/bin
     xbps = _make_xbps(tmp_path, {
