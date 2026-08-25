@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import sys
 import subprocess
 from dataclasses import dataclass, field
@@ -388,12 +389,16 @@ def chroot_install(pkgname: str) -> bool:
     CHROOT_LAST_ERR = ""
     r = _srun([XBPS_REMOVE(), "-r", str(MASTERDIR()), "-y", pkgname], timeout=300)
     _ensure_chroot_repos(MASTERDIR())
-    # --repository apunta al PADRE del subdirectorio de arch: xbps añade
-    # <arch>/repodata por sí solo; pasar repo_dir/<arch> directo busca
-    # <arch>/<arch>/repodata → "not found in repository pool"
-    cfg = get_config()
-    r2 = _srun([XBPS_INSTALL(), "-r", str(MASTERDIR()),
-               f"--repository={cfg.repo_dir}", "-y", pkgname], timeout=900)
+    # --repository = subdirectorio de arch (layout FLAT: <dir>/<arch>-repodata).
+    # El PADRE hace buscar <arch>/<arch>/repodata → "not found in repository pool".
+    #
+    # stdin SIEMPRE alimentado: la importación de la clave RSA del repo local
+    # pregunta "[Y/n]" incluso con -y, y con stdin en EOF el import falla
+    # ("Resource temporarily unavailable") → repo rechazado → "not found"
+    # (fallo determinista de CI sin tty; AGENTS: jamás confiar en stdin).
+    inner = shlex.join([XBPS_INSTALL(), "-r", str(MASTERDIR()),
+                        f"--repository={REPO}", "-Sy", "-y", pkgname])
+    r2 = _srun(["sh", "-c", f"printf 'y\\n' | {inner}"], timeout=900)
     if r2.returncode == 0 and "installed successfully" in (r2.stdout + r2.stderr):
         return True
     CHROOT_LAST_ERR = ((r2.stdout or "") + (r2.stderr or ""))[-600:]
