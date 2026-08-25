@@ -453,12 +453,18 @@ def chroot_smoke(binary_candidates: List[str]) -> tuple[bool, int]:
     Retorna (ok, num_libs_missing)."""
     LOADER_ERRORS = ("error while loading shared libraries",
                      "cannot open shared object file")
+    dbg = os.environ.get("CHROOT_DEBUG")
     for b in binary_candidates:
         chk = _run(["test", "-f", f"{MASTERDIR()}{b}"])
         if chk.returncode != 0:
+            if dbg:
+                print(f"[smoke][debug] skip (no existe): {b}", file=sys.stderr)
             continue
         ldd = _srun(["chroot", str(MASTERDIR()), "ldd", b], timeout=120)
         missing = (ldd.stdout + ldd.stderr).count("not found")
+        if dbg:
+            print(f"[smoke][debug] {b}: ldd_missing={missing}\n"
+                  f"[smoke][debug] ldd:\n{ldd.stdout}{ldd.stderr}", file=sys.stderr)
         if missing > 0:
             return False, missing
         for args in (["--version"], ["--help"], ["--no-sandbox", "--version"]):
@@ -470,6 +476,9 @@ def chroot_smoke(binary_candidates: List[str]) -> tuple[bool, int]:
                 # ejecución (no hay error de enlazado). Válido para EEL.
                 return True, 0
             out = (sm.stdout + sm.stderr)
+            if dbg:
+                print(f"[smoke][debug] {b} {args}: rc={sm.returncode}\n"
+                      f"[smoke][debug] out:\n{out[:1500]}", file=sys.stderr)
             # App GUI sin display PRIMERO: sus mensajes contienen frases que
             # colisionan con patrones de cargador (ej. wl_display ENOENT).
             if ("could not connect to display" in out or "qt.qpa" in out.lower()
