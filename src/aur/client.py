@@ -52,10 +52,24 @@ class AURClient:
     def _connect(self) -> sqlite3.Connection:
         """Conexión endurecida (H-1.1): WAL permite lectores concurrentes con
         escritura; busy_timeout absorbe locks breves de otros procesos
-        (vouru + CLI comparten cache.db)."""
+        (vouru + CLI comparten cache.db). El propio PRAGMA journal_mode=WAL
+        puede chocar con un writer activo → reintentos cortos (el test de
+        8 procesos lo detonaba de forma determinista en runners lentos)."""
         conn = sqlite3.connect(self.db_path, timeout=5.0)
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
+        last: Exception | None = None
+        for attempt in range(DB_BUSY_RETRIES):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "locked" not in msg and "busy" not in msg:
+                    raise
+                last = e
+                time.sleep(0.05 * (2 ** attempt))
+        else:
+            raise last  # type: ignore[misc]
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
