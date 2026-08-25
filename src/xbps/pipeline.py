@@ -376,7 +376,8 @@ def create_signed(stage: Path, pkgver: str, desc: str,
     # genera SIN firma; reportarlo honestamente en res.signed)
     if PRIVKEY.is_file():
         _run([XBPS_RINDEX(), "--privkey", str(PRIVKEY),
-              "--signedby", "aur2xbps <aur2xbps@local>", "--sign-pkg", str(out)])
+              "--signedby", "aur2xbps <aur2xbps@local>", "--sign-pkg", str(out)],
+             env=_xbps_env())
     # reindexar repo (dedup + orden estable ante xbps-rindex)
     xbps_files = sorted({str(p) for p in REPO.glob("*.xbps")})
     if xbps_files:

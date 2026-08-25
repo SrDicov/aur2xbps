@@ -171,9 +171,16 @@ def rindex_add(repo_dir: Path, xbps_files: List[Path], sign: bool = True,
     if not files:
         return
 
+    # XBPS_ARCH SIEMPRE explícito: los tools estáticos (musl) sin host-conf
+    # (/usr/share/xbps.d/xbps-arch.conf, ausente en runners) se autodetectan
+    # x86_64-musl y descartan los .xbps glibc ("unmatched arch") → repodata
+    # vacío → install "not found in repository pool".
+    from src.common.config import get_config
+    renv = {"XBPS_ARCH": get_config().arch}
+
     # 1. indexar (-f obligatorio: sin él xbps-rindex conserva silenciosamente
     #    la entrada previa si el pkgver ya estaba indexado, con metadatos stale)
-    _run([XBPS_RINDEX(), "-f", "-a"] + files)
+    _run([XBPS_RINDEX(), "-f", "-a"] + files, env=renv)
 
     if sign and privkey and Path(privkey).exists():
         # 2. firmar cada paquete (.sig2). xbps-rindex NO regenera firmas
@@ -182,10 +189,10 @@ def rindex_add(repo_dir: Path, xbps_files: List[Path], sign: bool = True,
         for f in repo_dir.glob("*.sig2"):
             f.unlink()
         _run([XBPS_RINDEX(), "--sign-pkg", "--privkey", str(privkey),
-              "--signedby", signedby] + files)
+              "--signedby", signedby] + files, env=renv)
         # 3. firmar repodata
         _run([XBPS_RINDEX(), "--sign", "--privkey", str(privkey),
-              "--signedby", signedby, str(repo_dir)])
+              "--signedby", signedby, str(repo_dir)], env=renv)
     elif sign:
         print(f"WARN: privkey {privkey} no existe, repo sin firma")
 
