@@ -82,12 +82,14 @@ class XbpsResult:
     errors: List[str] = field(default_factory=list)
 
 
-def _run(cmd: List[str], timeout: int = 600, capture: bool = True) -> subprocess.CompletedProcess:
+def _run(cmd: List[str], timeout: int = 600, capture: bool = True,
+         env: dict | None = None) -> subprocess.CompletedProcess:
     # Sin check=True: los llamadores inspeccionan returncode (fallbacks).
     # Solo TimeoutExpired puede propagarse → scrub de argv con secretos (H-5.2).
+    full_env = {**os.environ, **env} if env else None
     try:
         return subprocess.run(cmd, capture_output=capture, text=True,
-                              timeout=timeout)
+                              timeout=timeout, env=full_env)
     except subprocess.TimeoutExpired as e:
         from src.xbps.builder import redact_cmd
         if isinstance(getattr(e, "cmd", None), (list, tuple)):
@@ -99,6 +101,21 @@ def _srun(cmd: List[str], **kw) -> subprocess.CompletedProcess:
     """_run con elevador universal (src.common.priv): sudo/doas/run0/pkexec/su
     resueltos en un único punto — NUNCA hardcodear el binario aquí."""
     return _run(priv_wrap(cmd), **kw)
+
+
+def _xbps_env() -> dict:
+    """XBPS_ARCH explícito para los tools estáticos: en CI son builds musl y
+    sin esta env se autodetectan x86_64-musl → buscan <repo>/x86_64-musl-
+    repodata (inexistente en repos glibc) → reposync 'Not Found'."""
+    return {"XBPS_ARCH": get_config().arch}
+
+
+def _xbps_cmd(cmd: List[str]) -> List[str]:
+    """Ejecuta un tool xbps con XBPS_ARCH dentro de sh elevado: sudo/doas
+    LIMPIAN el entorno, así que la env viaja dentro del comando (env(1)),
+    inmune al scrub del elevador."""
+    pairs = [f"{k}={v}" for k, v in _xbps_env().items()]
+    return ["sh", "-c", shlex.join(["env", *pairs, *cmd])]
 
 
 def _void_python_version() -> str:
@@ -387,7 +404,8 @@ CHROOT_LAST_ERR = ""
 def chroot_install(pkgname: str) -> bool:
     global CHROOT_LAST_ERR
     CHROOT_LAST_ERR = ""
-    r = _srun([XBPS_REMOVE(), "-r", str(MASTERDIR()), "-y", pkgname], timeout=300)
+    r = _srun(_xbps_cmd([XBPS_REMOVE(), "-r", str(MASTERDIR()), "-y", pkgname]),
+              timeout=300)
     _ensure_chroot_repos(MASTERDIR())
     # --repository = subdirectorio de arch (layout FLAT: <dir>/<arch>-repodata).
     # El PADRE hace buscar <arch>/<arch>/repodata → "not found in repository pool".
@@ -396,9 +414,15 @@ def chroot_install(pkgname: str) -> bool:
     # pregunta "[Y/n]" incluso con -y, y con stdin en EOF el import falla
     # ("Resource temporarily unavailable") → repo rechazado → "not found"
     # (fallo determinista de CI sin tty; AGENTS: jamás confiar en stdin).
+    # stdin SIEMPRE alimentado: la importación de la clave RSA del repo local
+    # pregunta "[Y/n]" incluso con -y; con stdin EOF (CI sin tty) el import
+    # falla → repo rechazado → "not found in repository pool".
+    # XBPS_ARCH viaja dentro del shell elevado (sudo/doas limpian el entorno).
+    pairs = " ".join(f"{k}={v}" for k, v in _xbps_env().items())
     inner = shlex.join([XBPS_INSTALL(), "-r", str(MASTERDIR()),
                         f"--repository={REPO}", "-Sy", "-y", pkgname])
-    r2 = _srun(["sh", "-c", f"printf 'y\\n' | {inner}"], timeout=900)
+    r2 = _srun(["sh", "-c", f"printf 'y\\n' | env {pairs} {inner}"],
+               timeout=900)
     if r2.returncode == 0 and "installed successfully" in (r2.stdout + r2.stderr):
         return True
     CHROOT_LAST_ERR = ((r2.stdout or "") + (r2.stderr or ""))[-600:]
@@ -580,9 +604,8 @@ def build_python_in_void(nix_result: Path, pkgname: str, pkgver: str,
     _srun(["mkdir", "-p", str(MASTERDIR() / "tmp")])
     _srun(["cp", "-a", str(host_build), str(build_root)])
 
-    # 3. Asegurar toolchain python en masterdir
-    _srun([XBPS_INSTALL(), "-r", str(MASTERDIR()), "-y",
-          "python3-pip", "python3-setuptools"], timeout=600)
+    _srun(_xbps_cmd([XBPS_INSTALL(), "-r", str(MASTERDIR()), "-Sy", "-y",
+                     "python3-pip", "python3-setuptools"]), timeout=600)
 
     # 4. Generar wheel con python de Void
     r = _srun(["chroot", str(MASTERDIR()), "/usr/bin/env",
