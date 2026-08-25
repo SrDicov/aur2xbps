@@ -45,6 +45,21 @@ jobs:
           openssl genrsa -out "$AUR2XBPS_ROOT/keys/privkey.pem" 4096
           chmod 600 "$AUR2XBPS_ROOT/keys/privkey.pem"
 
+      - name: Masterdir base (ROOTFS Void — claves y conf incluidas)
+        run: |
+          # Un masterdir vacío hace que xbps-install pregunte la clave RSA
+          # del repo oficial (el root fresco no trae /usr/share/xbps.d ni
+          # /var/db/xbps/keys) y sin tty el import muere → "not found in
+          # repository pool". El ROOTFS oficial siembra TODO y elimina el
+          # problema de raíz (patrón ya probado en mass-build.yml).
+          IDX=https://repo-default.voidlinux.org/live/
+          FILE=$(curl -sS "$IDX" | grep -oE 'void-x86_64-ROOTFS-[0-9]+\.tar\.xz' | sort -V | tail -1)
+          echo "seeding masterdir desde $FILE"
+          MD="$AUR2XBPS_ROOT/void/masterdir"
+          mkdir -p "$MD"
+          curl -fsSL "$IDX$FILE" | sudo tar -xJ -C "$MD"
+          test -d "$MD/var/db/xbps" && test -f "$MD/etc/xbps.d/00-repository-main.conf"
+
       - uses: cachix/install-nix-action@v27
         with:
           extra_nix_config: |
