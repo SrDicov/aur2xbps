@@ -52,7 +52,7 @@ jobs:
           # /var/db/xbps/keys) y sin tty el import muere → "not found in
           # repository pool". El ROOTFS oficial siembra TODO y elimina el
           # problema de raíz (patrón ya probado en mass-build.yml).
-          IDX=https://repo-default.voidlinux.org/live/
+          IDX=https://repo-default.voidlinux.org/live/current/
           FILE=$(curl -sS "$IDX" | grep -oE 'void-x86_64-ROOTFS-[0-9]+\.tar\.xz' | sort -V | tail -1)
           echo "seeding masterdir desde $FILE"
           MD="$AUR2XBPS_ROOT/void/masterdir"
