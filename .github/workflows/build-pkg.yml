@@ -45,6 +45,24 @@ jobs:
           openssl genrsa -out "$AUR2XBPS_ROOT/keys/privkey.pem" 4096
           chmod 600 "$AUR2XBPS_ROOT/keys/privkey.pem"
 
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = true
+
+      - name: xbps estáticos (mirror oficial de Void)
+        run: |
+          IDX=https://repo-default.voidlinux.org/static/
+          FILE=$(curl -sS "$IDX" | grep -oE 'xbps-static-static-[0-9._]+\.x86_64-musl\.tar\.gz' | sort -V | tail -1)
+          echo "descargando $FILE"
+          mkdir -p /opt/xbps-static
+          curl -fsSL "$IDX$FILE" | tar xz -C /opt/xbps-static
+          BIN_DIR=$(dirname "$(find /opt/xbps-static -name xbps-create | head -1)")
+          test -x "$BIN_DIR/xbps-rindex"
+          echo "AUR2XBPS_XBPS_BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
+
       - name: Masterdir base (ROOTFS Void — claves y conf incluidas)
         run: |
           # Un masterdir vacío hace que xbps-install pregunte la clave RSA
@@ -64,23 +82,10 @@ jobs:
           ls "$MD" | head -8
           ls "$MD/var/db/" 2>&1 | head -4 || true
           test -d "$MD/var/db/xbps"
-
-      - uses: cachix/install-nix-action@v27
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            sandbox = true
-
-      - name: xbps estáticos (mirror oficial de Void)
-        run: |
-          IDX=https://repo-default.voidlinux.org/static/
-          FILE=$(curl -sS "$IDX" | grep -oE 'xbps-static-static-[0-9._]+\.x86_64-musl\.tar\.gz' | sort -V | tail -1)
-          echo "descargando $FILE"
-          mkdir -p /opt/xbps-static
-          curl -fsSL "$IDX$FILE" | tar xz -C /opt/xbps-static
-          BIN_DIR=$(dirname "$(find /opt/xbps-static -name xbps-create | head -1)")
-          test -x "$BIN_DIR/xbps-rindex"
-          echo "AUR2XBPS_XBPS_BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
+          # el ROOTFS (feb-2025) trae xbps viejo: el repo actual exige más
+          # nuevo ("The 'xbps' package must be updated", rc=16)
+          sudo env XBPS_ARCH=x86_64 "$AUR2XBPS_XBPS_BIN_DIR/xbps-install" \
+            -r "$MD" -Sy -u xbps
 
       - name: Build paquetes (${{ inputs.engine }})
         env:
