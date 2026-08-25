@@ -85,8 +85,10 @@ jobs:
           # el ROOTFS (feb-2025) trae xbps/libstdc++/glibc viejos: el repo
           # actual exige versiones nuevas ("must be updated" rc=16;
           # CXXABI_1.3.15 missing con Qt6 6.11). Upgrade COMPLETO del target.
-          yes | sudo env XBPS_ARCH=x86_64 "$AUR2XBPS_XBPS_BIN_DIR/xbps-install" -r "$MD" -Syn -u || true
-          yes | sudo env XBPS_ARCH=x86_64 "$AUR2XBPS_XBPS_BIN_DIR/xbps-install" -r "$MD" -Syu
+          # 1) el guard rc=16 solo se levanta actualizando PRIMERO el propio
+          #    gestor dentro del target; 2) después upgrade completo (ABI)
+          yes | sudo env XBPS_ARCH=x86_64 "$AUR2XBPS_XBPS_BIN_DIR/xbps-install" -r "$MD" -Sy -u xbps || true
+          yes | sudo env XBPS_ARCH=x86_64 "$AUR2XBPS_XBPS_BIN_DIR/xbps-install" -r "$MD" -Syu || true
 
       - name: Build paquetes (${{ inputs.engine }})
         env:
