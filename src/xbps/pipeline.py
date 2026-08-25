@@ -389,13 +389,24 @@ def _ensure_chroot_repos(md: Path) -> None:
 
     Los masterdirs mínimos (bootstrap manual/contenedor) pueden carecer de
     etc/xbps.d; con -r los defaults compilados NO aplican y cualquier dep
-    nueva da MISSING. Idempotente.
+    nueva da MISSING. Idempotente. De paso siembra las claves públicas Void
+    del host en el root (evita prompts de import sobre roots frescos).
     """
     conf = md / "etc" / "xbps.d" / "00-repository-main.conf"
     if not conf.exists():
         _srun(["mkdir", "-p", str(conf.parent)])
         _srun(["sh", "-c",
               f"printf 'repository=https://repo-default.voidlinux.org/current\\n' > {conf}"])
+    # claves oficiales: copia defensiva desde el host (skip elegante si el
+    # host no es Void o no las tiene; el `yes |` de chroot_install cubre)
+    host_share = Path("/usr/share/xbps.d")
+    if host_share.is_dir():
+        keys = sorted(host_share.glob("*.pem")) + sorted(host_share.glob("*.list"))
+        if keys:
+            dst = md / "usr" / "share" / "xbps.d"
+            _srun(["mkdir", "-p", str(dst)])
+            for k in keys:
+                _srun(["cp", "-n", str(k), str(dst / k.name)])
 
 
 CHROOT_LAST_ERR = ""
@@ -414,14 +425,14 @@ def chroot_install(pkgname: str) -> bool:
     # pregunta "[Y/n]" incluso con -y, y con stdin en EOF el import falla
     # ("Resource temporarily unavailable") → repo rechazado → "not found"
     # (fallo determinista de CI sin tty; AGENTS: jamás confiar en stdin).
-    # stdin SIEMPRE alimentado: la importación de la clave RSA del repo local
-    # pregunta "[Y/n]" incluso con -y; con stdin EOF (CI sin tty) el import
-    # falla → repo rechazado → "not found in repository pool".
-    # XBPS_ARCH viaja dentro del shell elevado (sudo/doas limpian el entorno).
+    # stdin SIEMPRE alimentado con 'yes': sobre un masterdir vacío xbps
+    # pregunta la clave RSA del REPO OFICIAL Void (el rootfs fresco no trae
+    # /usr/share/xbps.d) Y LUEGO la del repo local — dos prompts, y '-y' no
+    # cubre ninguna; con stdin EOF el import muere → "not found in pool".
     pairs = " ".join(f"{k}={v}" for k, v in _xbps_env().items())
     inner = shlex.join([XBPS_INSTALL(), "-r", str(MASTERDIR()),
                         f"--repository={REPO}", "-Sy", "-y", pkgname])
-    r2 = _srun(["sh", "-c", f"printf 'y\\n' | env {pairs} {inner}"],
+    r2 = _srun(["sh", "-c", f"yes | env {pairs} {inner}"],
                timeout=900)
     if r2.returncode == 0 and "installed successfully" in (r2.stdout + r2.stderr):
         return True
