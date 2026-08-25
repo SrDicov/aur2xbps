@@ -8,6 +8,7 @@ Receta determinista TRH-validada en Fase 0:
 from __future__ import annotations
 import hashlib
 import os
+import re
 import sys
 import subprocess
 from dataclasses import dataclass, field
@@ -19,7 +20,8 @@ from src.xbps.shlibs import ShlibsDB
 from src.common.config import get_config
 from src.common.paths import (FAKE_ROOT, PRIVKEY,
                               REPO_X86_64 as REPO, VOID_BASE)
-from src.common.tools import find_xbps_tool, sudo_prefix
+from src.common.tools import find_xbps_tool
+from src.common.priv import priv_wrap
 
 
 def MASTERDIR() -> Path:  # noqa: N802 — masterdir efectivo (config o xbps-src)
@@ -41,6 +43,30 @@ def XBPS_QUERY() -> str:  # noqa: N802
 def VOID_INTERP() -> str:  # noqa: N802 — intérprete ELF según arch detectada
     from src.common.config import dynamic_linker
     return dynamic_linker(get_config().arch)
+
+
+def _base_dep() -> str:
+    """Dep base según libc objetivo (glibc|musl), formato pkg>=ver.
+    Versión real desde el masterdir si se puede consultar; piso conocido
+    como fallback. NUNCA hardcodear 'glibc' en los llamadores."""
+    from src.common.config import effective_libc
+    cfg = get_config()
+    if effective_libc(cfg) == "musl":
+        pkg, floor = "musl", "1.2.5"
+    else:
+        pkg, floor = "glibc", "2.41"
+    try:
+        q = _srun([XBPS_QUERY(), "-r", str(MASTERDIR()), pkg],
+                  timeout=60)
+        if q.returncode == 0:
+            for line in (q.stdout or "").splitlines():
+                tok = line.strip()
+                m = re.match(rf"^{re.escape(pkg)}-(\d[\w.+-]*)$", tok)
+                if m:
+                    return f"{pkg}>={m.group(1)}"
+    except Exception:                                        # noqa: BLE001
+        pass
+    return f"{pkg}>={floor}"
 
 
 @dataclass
@@ -68,12 +94,18 @@ def _run(cmd: List[str], timeout: int = 600, capture: bool = True) -> subprocess
         raise
 
 
+def _srun(cmd: List[str], **kw) -> subprocess.CompletedProcess:
+    """_run con elevador universal (src.common.priv): sudo/doas/run0/pkexec/su
+    resueltos en un único punto — NUNCA hardcodear el binario aquí."""
+    return _run(priv_wrap(cmd), **kw)
+
+
 def _void_python_version() -> str:
     """Versión python del masterdir Void (config.python_version o autodetect)."""
     cfg = get_config()
     if cfg.python_version:
         return cfg.python_version
-    r = _run([*sudo_prefix(), "chroot", str(MASTERDIR()), "/usr/bin/python3",
+    r = _srun(["chroot", str(MASTERDIR()), "/usr/bin/python3",
               "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"],
              timeout=30)
     ver = r.stdout.strip()
@@ -89,7 +121,7 @@ def normalize_stage(stage: Path):
     _run(["find", str(stage), "-exec", "touch", "-h", "-d", "@0", "{}", ";"])
     r = _run(["find", str(stage), "-exec", "chown", "-h", "0:0", "{}", ";"])
     if r.returncode != 0:
-        _run([*sudo_prefix(), "find", str(stage), "-exec", "chown", "-h", "0:0", "{}", ";"])
+        _srun(["find", str(stage), "-exec", "chown", "-h", "0:0", "{}", ";"])
 
 
 def _generate_console_scripts(stage: Path) -> int:
@@ -179,7 +211,7 @@ def _fix_shebangs(stage: Path) -> int:
         try:
             Path(f).write_text(content, encoding="utf-8", errors="surrogateescape")
         except PermissionError:
-            subprocess.run([*sudo_prefix(), "chmod", "u+w", f], check=True)
+            subprocess.run(priv_wrap(["chmod", "u+w", f]), check=True)
             Path(f).write_text(content, encoding="utf-8", errors="surrogateescape")
             perms = perms | 0o200  # restaurar writable como estaba el original Nix
         Path(f).chmod(perms)
@@ -322,13 +354,15 @@ def create_signed(stage: Path, pkgver: str, desc: str,
     # Post-proceso cross-host: uname/gname=∅ + checksum recalculado + zstd -T1
     from src.xbps.determinize import determinize_xbps
     out, sha = determinize_xbps(out)
-    # firma individual
-    sr = _run([XBPS_RINDEX(), "--privkey", str(PRIVKEY),
-               "--signedby", "aur2xbps <aur2xbps@local>", "--sign-pkg", str(out)])
-    signed = sr.returncode == 0
-    # reindexar repo
-    xbps_files = [str(p) for p in REPO.glob("*.xbps")]
-    _run([XBPS_RINDEX(), "-f", "-a"] + xbps_files)
+    # firma individual: requiere privkey existente (si falta, el paquete se
+    # genera SIN firma; reportarlo honestamente en res.signed)
+    if PRIVKEY.is_file():
+        _run([XBPS_RINDEX(), "--privkey", str(PRIVKEY),
+              "--signedby", "aur2xbps <aur2xbps@local>", "--sign-pkg", str(out)])
+    # reindexar repo (dedup + orden estable ante xbps-rindex)
+    xbps_files = sorted({str(p) for p in REPO.glob("*.xbps")})
+    if xbps_files:
+        _run([XBPS_RINDEX(), "-f", "-a"] + xbps_files)
     return out, sha
 
 
@@ -341,8 +375,8 @@ def _ensure_chroot_repos(md: Path) -> None:
     """
     conf = md / "etc" / "xbps.d" / "00-repository-main.conf"
     if not conf.exists():
-        _run([*sudo_prefix(), "mkdir", "-p", str(conf.parent)])
-        _run([*sudo_prefix(), "sh", "-c",
+        _srun(["mkdir", "-p", str(conf.parent)])
+        _srun(["sh", "-c",
               f"printf 'repository=https://repo-default.voidlinux.org/current\\n' > {conf}"])
 
 
@@ -352,9 +386,9 @@ CHROOT_LAST_ERR = ""
 def chroot_install(pkgname: str) -> bool:
     global CHROOT_LAST_ERR
     CHROOT_LAST_ERR = ""
-    r = _run([*sudo_prefix(), XBPS_REMOVE(), "-r", str(MASTERDIR()), "-y", pkgname], timeout=300)
+    r = _srun([XBPS_REMOVE(), "-r", str(MASTERDIR()), "-y", pkgname], timeout=300)
     _ensure_chroot_repos(MASTERDIR())
-    r2 = _run([*sudo_prefix(), XBPS_INSTALL(), "-r", str(MASTERDIR()),
+    r2 = _srun([XBPS_INSTALL(), "-r", str(MASTERDIR()),
                f"--repository={REPO}", "-y", pkgname], timeout=900)
     if r2.returncode == 0 and "installed successfully" in (r2.stdout + r2.stderr):
         return True
@@ -373,13 +407,13 @@ def chroot_smoke(binary_candidates: List[str]) -> tuple[bool, int]:
         chk = _run(["test", "-f", f"{MASTERDIR()}{b}"])
         if chk.returncode != 0:
             continue
-        ldd = _run([*sudo_prefix(), "chroot", str(MASTERDIR()), "ldd", b], timeout=120)
-        missing = ldd.stdout.count("not found")
+        ldd = _srun(["chroot", str(MASTERDIR()), "ldd", b], timeout=120)
+        missing = (ldd.stdout + ldd.stderr).count("not found")
         if missing > 0:
             return False, missing
         for args in (["--version"], ["--help"], ["--no-sandbox", "--version"]):
             try:
-                sm = _run([*sudo_prefix(), "chroot", str(MASTERDIR()), "/usr/bin/env",
+                sm = _srun(["chroot", str(MASTERDIR()), "/usr/bin/env",
                            "LANG=C.UTF-8", b] + args, timeout=60)
             except subprocess.TimeoutExpired:
                 # App GUI/demonio que bloquea sin display: cargó y quedó en
@@ -397,6 +431,10 @@ def chroot_smoke(binary_candidates: List[str]) -> tuple[bool, int]:
                 return False, 0
             if sm.returncode == 0:
                 return True, 0
+            # exit 126/127: fallo de exec (intérprete ELF ausente, permisos).
+            # Sin salida de la app: NUNCA es ejecución válida (EEL falso pos.)
+            if sm.returncode in (126, 127):
+                return False, 0
             # exit != 0 pero sin errores de cargador y con salida propia → EEL OK
             if len(out.strip()) > 0:
                 return True, 0
@@ -456,14 +494,16 @@ def full_pipeline(nix_result: Path, pkgname: str, pkgver: str, desc: str,
     # 4. run_depends automáticos desde shlibs real
     deps = auto_run_depends(stage)
     if not deps:
-        deps = ["glibc>=2.41"]
+        deps = [_base_dep()]
     print(f"[pipeline] run_depends ({len(deps)}): {' '.join(deps[:6])}...")
 
     # 5. Crear + firmar
     try:
         out, sha = create_signed(stage, pkgver, desc, deps)
-        res.xbps_path, res.sha256, res.signed = out, sha, True
-        print(f"[pipeline] creado {out.name} sha256={sha[:16]}… firmado")
+        res.xbps_path, res.sha256 = out, sha
+        res.signed = PRIVKEY.is_file()
+        estado_firma = "firmado" if res.signed else "SIN firmar (privkey ausente)"
+        print(f"[pipeline] creado {out.name} sha256={sha[:16]}… {estado_firma}")
         # repodata local: sin índice el chroot no ve el paquete
         # ("not found in repository pool")
         try:
@@ -522,21 +562,21 @@ def build_python_in_void(nix_result: Path, pkgname: str, pkgver: str,
     # 2. Copiar fuente al masterdir para compilar con Void python
     # Copiar fuente a tmp del host, luego bind al masterdir
     host_build = Path("/tmp") / f"pybuild-{pkgname}"
-    _run([*sudo_prefix(), "rm", "-rf", str(host_build)])
-    _run([*sudo_prefix(), "cp", "-a", str(src_dir), str(host_build)])
-    _run([*sudo_prefix(), "chown", "-R", f"{__import__('os').getuid()}:{__import__('os').getgid()}", str(host_build)])
+    _srun(["rm", "-rf", str(host_build)])
+    _srun(["cp", "-a", str(src_dir), str(host_build)])
+    _srun(["chown", "-R", f"{__import__('os').getuid()}:{__import__('os').getgid()}", str(host_build)])
 
     build_root = MASTERDIR() / "tmp" / f"pybuild-{pkgname}"
-    _run([*sudo_prefix(), "rm", "-rf", str(build_root)])
-    _run([*sudo_prefix(), "mkdir", "-p", str(MASTERDIR() / "tmp")])
-    _run([*sudo_prefix(), "cp", "-a", str(host_build), str(build_root)])
+    _srun(["rm", "-rf", str(build_root)])
+    _srun(["mkdir", "-p", str(MASTERDIR() / "tmp")])
+    _srun(["cp", "-a", str(host_build), str(build_root)])
 
     # 3. Asegurar toolchain python en masterdir
-    _run([*sudo_prefix(), XBPS_INSTALL(), "-r", str(MASTERDIR()), "-y",
+    _srun([XBPS_INSTALL(), "-r", str(MASTERDIR()), "-y",
           "python3-pip", "python3-setuptools"], timeout=600)
 
     # 4. Generar wheel con python de Void
-    r = _run([*sudo_prefix(), "chroot", str(MASTERDIR()), "/usr/bin/env",
+    r = _srun(["chroot", str(MASTERDIR()), "/usr/bin/env",
               "HOME=/root", "SOURCE_DATE_EPOCH=0",
               "/bin/sh", "-c",
               f"cd /tmp/pybuild-{pkgname} && "
@@ -554,7 +594,7 @@ def build_python_in_void(nix_result: Path, pkgname: str, pkgver: str,
     # 5. Descomprimir wheel al stage con rutas Void
     import zipfile
     py_ver = _void_python_version()
-    _run([*sudo_prefix(), "rm", "-rf", str(stage)])
+    _srun(["rm", "-rf", str(stage)])
     stage.mkdir(parents=True, exist_ok=True)
     sp = stage / "usr" / "lib" / f"python{py_ver}" / "site-packages"
     sp.mkdir(parents=True, exist_ok=True)
@@ -593,14 +633,14 @@ def build_python_in_void(nix_result: Path, pkgname: str, pkgver: str,
 
     # 8. run_depends: glibc mínimo + extra (asegurar formato pkg>=ver)
     import re as _re
-    deps = ["glibc>=2.41"]
+    deps = [_base_dep()]
     if extra_deps:
         for d in extra_deps.split():
             if ">=" in d or "<" in d or "=" in d:
                 deps.append(d)
             else:
                 # buscar versión instalada en masterdir
-                q = _run([*sudo_prefix(), "chroot", str(MASTERDIR()),
+                q = _srun(["chroot", str(MASTERDIR()),
                           "xbps-uhelper", "version", d.strip()], timeout=30)
                 ver = q.stdout.strip()
                 deps.append(f"{d}>={ver}" if ver else d)
@@ -626,7 +666,7 @@ def build_python_in_void(nix_result: Path, pkgname: str, pkgver: str,
     if not ok:
         # fallback: verificar import del módulo como smoke
         mod_name = pkgname.replace("python-", "").replace("-git", "").replace("-", "_")
-        imp = _run([*sudo_prefix(), "chroot", str(MASTERDIR()), "/usr/bin/env",
+        imp = _srun(["chroot", str(MASTERDIR()), "/usr/bin/env",
                     "HOME=/root", "/usr/bin/python3", "-c",
                     f"import {mod_name}; print('import OK')"], timeout=60)
         if imp.returncode == 0 and "import OK" in imp.stdout:

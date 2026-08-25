@@ -7,6 +7,17 @@
 set -euo pipefail
 AXX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="${AUR2XBPS_ARCH:-$(uname -m)}"
+# Elevador universal (mismo orden que src/common/priv.py). En root, vacío.
+PRIV=""
+if [ "$(id -u)" != "0" ]; then
+  if [ -n "${AUR2XBPS_PRIV:-}" ]; then PRIV="$AUR2XBPS_PRIV"
+  else
+    for t in sudo doas run0; do
+      command -v "$t" >/dev/null 2>&1 && { PRIV="$t"; break; }
+    done
+    [ -n "$PRIV" ] || { echo "[CI] sin root ni elevador (sudo/doas/run0): exporta AUR2XBPS_PRIV" >&2; exit 1; }
+  fi
+fi
 XBPS_CREATE_BIN="$(command -v xbps-create || echo /usr/local/xbps/usr/bin/xbps-create)"
 TRH_STAGE_HELLO="${TRH_STAGE_HELLO:-hello}"
 TRH_STAGE_REAL="${TRH_STAGE_REAL:-}"   # paquete real opcional para TRH determinize
@@ -20,7 +31,9 @@ FAIL=0
 NOTIFY="${1:-}"
 case "$NOTIFY" in
   --notify) NOTIFY_MODE="on" ;;
+  --quick)  NOTIFY_MODE="off"; unset TRH_STAGE_REAL ;;   # omite TRH de paquete grande
   "")       NOTIFY_MODE="off" ;;
+  *) echo "uso: ci-local.sh [--quick|--notify]" >&2; exit 2 ;;
 esac
 
 step() { echo -e "\n=== [CI] $1 ==="; }
@@ -75,8 +88,8 @@ fi
 if [ -d "$STAGE_HELLO" ] && { [ -d "$STAGE_HELLO/usr/bin" ] || [ -d "$STAGE_HELLO/bin" ]; }; then
 rm -rf "$TRH_DIR"; mkdir -p "$TRH_DIR"
 for i in 1 2 3; do
-  sudo find "$STAGE_HELLO" -exec touch -h -d @0 {} \; 2>/dev/null || find "$STAGE_HELLO" -exec touch -h -d @0 {} \;
-  sudo find "$STAGE_HELLO" -exec chown -h 0:0 {} \; 2>/dev/null || true
+  "$PRIV" find "$STAGE_HELLO" -exec touch -h -d @0 {} \; 2>/dev/null || find "$STAGE_HELLO" -exec touch -h -d @0 {} \;
+  "$PRIV" find "$STAGE_HELLO" -exec chown -h 0:0 {} \; 2>/dev/null || true
   (cd "$TRH_DIR" && SOURCE_DATE_EPOCH=0 TZ=UTC LC_ALL=C \
     "$XBPS_CREATE_BIN" -A "$ARCH" -n "hello-2.12.3_1" -s "CI TRH" \
     -m "ci@local" -l "GPL-3.0-only" --compression zstd -D "glibc>=2.41" "$STAGE_HELLO" >/dev/null 2>&1)
@@ -100,8 +113,8 @@ fi
 if [ -n "$STAGE_BUN" ]; then
   rm -rf "$TRH_DIR/bun"; mkdir -p "$TRH_DIR/bun"
   for i in 1 2 3; do
-    sudo find "$STAGE_BUN" -exec touch -h -d @0 {} \; 2>/dev/null || true
-    sudo find "$STAGE_BUN" -exec chown -h 0:0 {} \; 2>/dev/null || true
+    "$PRIV" find "$STAGE_BUN" -exec touch -h -d @0 {} \; 2>/dev/null || true
+    "$PRIV" find "$STAGE_BUN" -exec chown -h 0:0 {} \; 2>/dev/null || true
     (cd "$TRH_DIR/bun" && SOURCE_DATE_EPOCH=0 TZ=UTC LC_ALL=C \
       "$XBPS_CREATE_BIN" -A "$ARCH" -n "$TRH_STAGE_REAL-1_1" -s "CI TRH real" \
       -m "ci@local" -l "custom:unknown" --compression zstd -D "glibc>=2.41" "$STAGE_BUN" >/dev/null 2>&1)
@@ -109,7 +122,7 @@ if [ -n "$STAGE_BUN" ]; then
 from src.xbps.determinize import determinize_xbps
 from pathlib import Path
 import sys
-_, sha = determinize_xbps(sorted(Path('$TRH_DIR/bun').glob(f'*.{__import__\'os\'.environ.get(\'AUR2XBPS_ARCH\', \'x86_64\')}.xbps'))[0])
+_, sha = determinize_xbps(sorted(Path('$TRH_DIR/bun').glob(f'*.{__import__\'os\'.environ.get(\'AUR2XBPS_ARCH\', \'$ARCH\')}.xbps'))[0])
 print(sha)" >> "$TRH_DIR/bun/hashes.txt"
     rm -f "$TRH_DIR"/bun/*.$ARCH.xbps
   done
@@ -164,7 +177,7 @@ XBPS_INSTALL_BIN="$(command -v xbps-install || echo /usr/local/xbps/usr/bin/xbps
 SMOKE_BIN="${SMOKE_BIN:-$(echo "$SMOKE_TARGET" | sed 's/-bin$//')}"
 BIN=$(find "$MASTERDIR/usr/bin" -maxdepth 1 -name "$SMOKE_BIN" 2>/dev/null | head -n1)
 if [ -n "$BIN" ]; then
-  OUT=$(sudo chroot "$MASTERDIR" "/usr/bin/$SMOKE_BIN" --version 2>&1 || true)
+  OUT=$("$PRIV" chroot "$MASTERDIR" "/usr/bin/$SMOKE_BIN" --version 2>&1 || true)
   # EEL válido: sin errores del cargador y con salida propia de la app
   # apps que rechazan root emiten salida propia — eso es ejecución correcta
   if echo "$OUT" | grep -qE "loading shared libraries|Segmentation fault"; then
@@ -189,19 +202,19 @@ fi
 # ---------- 6. Smoke como usuario NO-root en el chroot (uid real del invocador) ----------
 NR_UID="$(id -u)"; NR_GID="$(id -g)"; NR_USER="$(id -un)"
 step "Smoke no-root ($NR_USER uid $NR_UID en chroot)"
-if ! sudo grep -q "^$NR_USER:" "$MASTERDIR/etc/passwd" 2>/dev/null; then
-  sudo sh -c "echo '$NR_USER:x:$NR_UID:$NR_UID::/home/$NR_USER:/bin/sh' >> $MASTERDIR/etc/passwd"
-  sudo sh -c "echo '$NR_USER:x:$NR_GID:' >> $MASTERDIR/etc/group"
+if ! "$PRIV" grep -q "^$NR_USER:" "$MASTERDIR/etc/passwd" 2>/dev/null; then
+  "$PRIV" sh -c "echo '$NR_USER:x:$NR_UID:$NR_UID::/home/$NR_USER:/bin/sh' >> '$MASTERDIR/etc/passwd'"
+  "$PRIV" sh -c "echo '$NR_USER:x:$NR_GID:' >> '$MASTERDIR/etc/group'"
   pass "usuario $NR_USER creado en masterdir"
 else
   pass "usuario $NR_USER ya existe"
 fi
-sudo mkdir -p "$MASTERDIR/home/$NR_USER"
-sudo chown -R "$NR_UID:$NR_GID" "$MASTERDIR/home/$NR_USER"
-sudo chmod 755 "$MASTERDIR/home/$NR_USER"
+"$PRIV" mkdir -p "$MASTERDIR/home/$NR_USER"
+"$PRIV" chown -R "$NR_UID:$NR_GID" "$MASTERDIR/home/$NR_USER"
+"$PRIV" chmod 755 "$MASTERDIR/home/$NR_USER"
 # /dev/null accesible para no-root (el bind de /dev del host puede heredar 600)
-[ -e "$MASTERDIR/dev/null" ] && sudo chmod 666 "$MASTERDIR/dev/null" 2>/dev/null || \
-  sudo mknod -m 666 "$MASTERDIR/dev/null" c 1 3 2>/dev/null || true
+[ -e "$MASTERDIR/dev/null" ] && "$PRIV" chmod 666 "$MASTERDIR/dev/null" 2>/dev/null || \
+  "$PRIV" mknod -m 666 "$MASTERDIR/dev/null" c 1 3 2>/dev/null || true
 NOROOT_PKG="${NOROOT_SMOKE_PKG:-${SMOKE_TARGET:-}}"
 NOROOT_BIN="${NOROOT_SMOKE_BIN:-$(echo "$NOROOT_PKG" | sed 's/-git$//;s/-bin$//' )}"
 XBPS_QUERY_BIN="$(command -v xbps-query || echo /usr/local/xbps/usr/bin/xbps-query)"
@@ -213,7 +226,7 @@ if [ -n "$NOROOT_PKG" ] && [ "${NOROOT_SMOKE_ENABLED:-1}" = "1" ] &&
       && pass "instalación $NOROOT_PKG" || fail "instalación $NOROOT_PKG"
   fi
   if [ -x "$MASTERDIR/usr/bin/$NOROOT_BIN" ]; then
-    OUT=$(sudo chroot --userspec="$NR_UID:$NR_GID" "$MASTERDIR" /usr/bin/env \
+    OUT=$("$PRIV" chroot --userspec="$NR_UID:$NR_GID" "$MASTERDIR" /usr/bin/env \
           HOME="/home/$NR_USER" TERM=dumb "/usr/bin/$NOROOT_BIN" --version 2>&1 || true)
     if echo "$OUT" | grep -qE "loading shared libraries|Segmentation fault|Permission denied|fallo al ejecutar|No such file"; then
       fail "smoke no-root: $(echo "$OUT" | head -n1)"

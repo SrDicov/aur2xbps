@@ -235,7 +235,7 @@ def validate_srcinfo_staleness(srcinfo: SrcInfo, git_tag: str | None) -> list[st
     if not git_tag:
         return errs
     for pname, pkg in srcinfo.packages.items():
-        norm_tag = git_tag.lstrip("v")
+        norm_tag = git_tag[1:] if git_tag.startswith("v") else git_tag
         if norm_tag != pkg.pkgver:
             errs.append(f"{pname}: pkgver .SRCINFO={pkg.pkgver} != git tag {git_tag} -> stale, abortar")
     return errs

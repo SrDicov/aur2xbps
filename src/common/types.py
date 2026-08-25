@@ -60,10 +60,6 @@ class SrcInfoPackage:
         """Prioriza arch-qualified, fallback al genérico."""
         return d.get(arch) or d.get("", []) or []
 
-    @property
-    def all_sources(self, arch: str = "x86_64") -> List[str]:
-        return self._for_arch(self.source, arch)
-
     def sources_for(self, arch: str = "x86_64") -> List[str]:
         return self._for_arch(self.source, arch)
 

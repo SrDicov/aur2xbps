@@ -8,7 +8,7 @@ Bridge AUR (Arch) → Void Linux (XBPS) usando Nix como motor hermético. Pipeli
 ## Configuración de entorno
 - **Workspace** (cachés, fuentes, derivaciones, repo): variable `AUR2XBPS_ROOT` (default `~/.local/share/aur2xbps`; alternativamente archivo `~/.config/aur2xbps/root` con la ruta). Resolución centralizada en `src/common/paths.py` — NUNCA hardcodear rutas absolutas personales.
 - **Claves de firma**: FUERA del árbol, en `AUR2XBPS_KEYDIR` (default `/etc/xbps/keys/aur2xbps`). Nunca commitear `.pem`/`.key`/`.sig2`.
-- **Requisitos**: Python ≥3.11, Nix ≥2.35 (flakes + sandbox), xbps estáticos, patchelf, void-packages bootstrapeado (submódulo `common/void-packages`; fuente de `common/shlibs`). Elevador de privilegios: sudo o doas (Void) — override `AUR2XBPS_PRIV`; guía operativa: `docs/USAGE.md`.
+- **Requisitos**: Python ≥3.11, Nix ≥2.35 (flakes + sandbox), xbps estáticos, patchelf, void-packages bootstrapeado (submódulo `common/void-packages`; fuente de `common/shlibs`). Elevador de privilegios UNIVERSAL (`src/common/priv.py`): root › `AUR2XBPS_PRIV` › TOML `[priv] command` › autodetección sudo→doas→run0→pkexec→su — PROHIBIDO hardcodear `sudo`; guía operativa: `docs/USAGE.md`.
 
 ## Código — entrypoints
 - `src/common/config.py` — configuración central (env AUR2XBPS_* > ~/.config/aur2xbps/config.toml > /etc/aur2xbps/config.toml > defaults XDG). Claves: data_dir/cache_dir/repo_dir/keys_dir/masterdir/void_packages_dir/host/port/arch/python_version/signing_key/log_level/restricted_mode/offline. `dynamic_linker()`/`nix_system()` para multi-arch.
@@ -38,9 +38,11 @@ SMOKE_TARGET=<pkg-bin> ./scripts/ci-local.sh   # activa smoke chroot (sin env se
 python3 -m src.nix.patchelf             # linter de flakes generados (standalone)
 ```
 - Imports SIEMPRE como `from src.…`: el `conftest.py` en la raíz inserta el repo en `sys.path`. Si corres pytest desde otro directorio, rompe.
-- Tests marcados `@pytest.mark.network` acceden a AUR real; el resto no usa red. En CI público se ejecutan con `-m "not network"`.
+- Tests marcados `@pytest.mark.network` acceden a AUR real; el resto no usa red. En CI público se ejecutan con `-m "not network"`. Un test de subproceso que toque RPC/`_compute_hashes` necesita `AUR2XBPS_OFFLINE=1` en su env (ver `test_cli_stdout_pure_json`).
 - Fixtures: `tests/fixtures/srcinfo/` (56 `.SRCINFO` reales + maliciosos sintéticos), `tests/fixtures/flakes/`.
 - CI GitHub `.github/workflows/ci.yml`: jobs lint/trh/tiar, sin secretos (clave RSA efímera generada en runtime; workspace en `/tmp` del runner).
+- Los fakes de `subprocess.run` en tests aceptan `**kw`/`cwd=None`: `_run()` pasa `cwd` y un fake sin ese kwarg revienta con TypeError.
+- `test_shlibs` se salta solo si falta `common/shlibs` (submodule sin bootstrap) — no lo "arregles" hardcodeando rutas.
 
 ## KPIs
 | KPI | Verificación | Umbral |
@@ -83,6 +85,17 @@ python3 -m src.nix.patchelf             # linter de flakes generados (standalone
 - **`file` command**: necesario en nativeBuildInputs para detección ELF.
 - **Secretos en argv**: comandos con `--privkey`/`--sign-key` SIEMPRE vía `builder._run` (redacta en logs/excepciones); nunca `subprocess.run` directo ni print del cmd crudo.
 - **Smoke de paquetes**: extraer el `.xbps` a tmp y ejecutar resolviendo symlinks (`/usr/bin/x → ../lib/app/x` es patrón habitual post-reubicación); LD_LIBRARY_PATH al lib propio del paquete.
+- **Templates Nix = str.format**: TODO `{}` literal de shell (`find {} +`, `-exec … \;`) va DOBLE `{{}}`; un `{}` suelto lanza IndexError en `.format()` y rompe TODA la generación (los flakes `-bin` estuvieron muertos sin que ningún test lo viera — fixture escrito a mano). Tras tocar un template, generar un flake real desde `tests/fixtures/srcinfo/` y evaluarlo.
+- **Auto-fix de hash = 1 ocurrencia por intento** (`build_with_hash_fix`): Nix reporta UN FOD fallido a la vez; un replace global estampa el primer hash en TODOS los placeholders y contamina derivaciones ya correctas en flakes multi-paquete.
+- **Detección suckless exacta**: `name == s or name.startswith(s+"-")`; un `startswith("st")` puro capturaba steam/stlink/stellarium → template dwm.
+- **URLs VCS antes de git ls-remote**: validar esquema http(s)/git/ssh y pasar `--` separador; una URL AUR empezando por `-` es parseada como opción de git (--upload-pack ejecuta comandos).
+- **Smoke EEL exit 126/127**: fallo de exec (intérprete ausente) SIN salida de app = FALLO, no éxito. Solo exit!=0 CON salida propia de la app cuenta como ejecución válida.
+- **Firma honesta**: `res.signed` refleja existencia de privkey; `xbps-rindex --sign-pkg` vía `_run` (check=True) — un fallo de firma levanta excepción, jamás se reporta "firmado" un pkg sin firma.
+- **determinize cabeceras tar**: chequeo con paréntesis explícito + rechazar size-field base-256 (high bit); la precedencia original `(A and B) or C` trataba bloques basura como cabeceras y desincronizaba el tar.
+- **Privkey nace 0600**: pre-crear con `os.open(O_CREAT|O_EXCL, 0o600)` ANTES de openssl genrsa (ventana world-readable entre genrsa y chmod).
+- **CI GH Actions**: todo workflow lleva `permissions: contents: read` top-level y `timeout-minutes` por job; inputs de workflow_dispatch van a `run:` vía `env:` (nunca `${{ inputs.x }}` interpolado directo en shell).
+- **load_config(path)**: el TOML explícito sustituye el DESCUBRIMIENTO de archivos, pero las env `AUR2XBPS_*` SIEMPRE se aplican encima (contrato verificado en tests).
+- **Privilegios**: operaciones con root SIEMPRE `priv.priv_wrap(argv)`; `tools.sudo_prefix()` solo vale para elevadores prefijo (falla con su/pkexec — shape propia). En shell: variable `PRIV` resuelta una vez, nunca `sudo` literal.
 
 ## Flujo operativo (CLI)
 ```bash
@@ -117,8 +130,14 @@ aur2xbps repo --sign
 ## Integración vouru
 Helper bash que envuelve xbps-src en `~/.local/share/pkgs/void-packages` (config ~/.voururc). Consume plantillas ESTÁNDAR de `srcpkgs/<pkg>/template`; instala desde hostdir/binpkgs. aur2xbps genera las plantillas (`aur2xbps template`) y vouru compila/instala. La plantilla debe ser suficiente SIN aur2xbps en el medio.
 
-## Servicio del repo (runit, NO systemd)
-Void usa runit. El instalador crea `/etc/runit/runsvdir/default/aur2xbps-repo/run` (root) o `~/.config/aur2xbps/runit/` (usuario con `runsvdir`). PROHIBIDO reintroducir unidades systemd: mentalidad Arch no aplica en Void. Control: `sv up|down|status aur2xbps-repo`.
+## Servicio del repo (runit | dinit, NUNCA systemd)
+`scripts/service-install.sh` detecta PID1/directorios y emite servicio **runit** (sistema `/etc/runit/runsvdir/default/aur2xbps-repo` o usuario `~/.config/aur2xbps/runit/`) o **dinit** (sistema `/etc/dinit.d/` o usuario `~/.config/dinit.d/`). Override de pruebas: `AUR2XBPS_FORCE_INIT=runit|dinit`. PROHIBIDO reintroducir unidades systemd: mentalidad Arch no aplica en Void. Control runit: `sv up|down|status aur2xbps-repo`; dinit: `dinitctl [--user] start|stop aur2xbps-repo`.
+
+## Multi-libc (glibc | musl)
+- Objetivo: `AUR2XBPS_LIBC=auto|glibc|musl` (auto = sonda `ldd --version`). Resolución centralizada: `config.effective_libc()` / `xbps_arch()` (sufijo `-musl`) / `dynamic_linker(arch, libc)`.
+- **Masterdir ÚNICO del sabor objetivo**: marcador `.aur2xbps-libc`; si el sabor difiere, `_build_with_xbps_src` re-bootstrapea desde cero (legado sin marca = glibc). Solo se descarga lo que la máquina necesita.
+- Deps base NUNCA hardcodeadas: `pipeline._base_dep()` (glibc>=… | musl>=…) y `generator._base_nix_input()` (`glibc`|`musl` attr nixpkgs).
+- **Void-musl descarta precompilados AUR** (upstream glibc, no corren): predicado ÚNICO `src/common/binpkg.is_precompiled()` aplicado en `prepare_package()` (temprano por `-bin`, profundo por URLs). Válvula: `AUR2XBPS_MUSL_ALLOW_BIN=1`. No duplicar tablas de detección: generator/template delegan en binpkg.
 
 ## Limitaciones conocidas
 - python-legacy setup.py con cmdclass custom: experimental.

@@ -69,19 +69,20 @@ def nix_version() -> str | None:
 
 
 def sudo_prefix() -> list[str]:
-    """Prefijo de privilegios: [] si somos root; si no, el elevador
-    disponible. Void Linux trae doas (no sudo) — detectar en orden
-    $AUR2XBPS_PRIV → sudo → doas; error claro si no hay ninguno."""
-    import os
-    import shutil as _sh
-    if os.getuid() == 0:
+    """COMPAT: prefijo de privilegios para elevadores de forma argv-prefijo.
+
+    Delegado en src.common.priv (orden root › $AUR2XBPS_PRIV › [priv] command
+    › sudo → doas → run0 → pkexec → su). Lanza error claro si el elevador
+    resuelto NO admite forma prefijo (su/pkexec): en ese caso la llamada debe
+    usar priv.priv_wrap(argv_completo), que soporta todas las shapes.
+    """
+    from src.common import priv
+
+    if priv._is_root():
         return []
-    forced = os.environ.get("AUR2XBPS_PRIV")
-    if forced:
-        return [forced]
-    for tool in ("sudo", "doas"):
-        if _sh.which(tool):
-            return [tool]
-    raise FileNotFoundError(
-        "sin sudo ni doas en PATH y no somos root: instala doas o exporta "
-        "AUR2XBPS_PRIV=<elevador>")
+    toks = priv.detect()
+    if priv._shape(toks) != "prefix":
+        raise RuntimeError(
+            f"elevador '{toks[0]}' sin forma de prefijo: usa "
+            "src.common.priv.priv_wrap(<argv completo>)")
+    return toks

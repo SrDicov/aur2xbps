@@ -4,6 +4,8 @@ set -euo pipefail
 ARCH="${AUR2XBPS_ARCH:-$(uname -m)}"
 # Fase 0 Q3 — xbps-create reproducibilidad + rindex --sign
 PKG="$1"
+[ -n "$PKG" ] || { echo "uso: phase0-package.sh <pkg>" >&2; exit 2; }
+case "$PKG" in *[!A-Za-z0-9._+-]*|""|..|.*) echo "pkg inválido: $PKG" >&2; exit 2;; esac
 WS="${AUR2XBPS_ROOT:-$(cat ~/.config/aur2xbps/root 2>/dev/null || echo "$HOME/.local/share/aur2xbps")}"
 RESULT="$WS/result-$PKG"
 STAGE="$WS/fake-root/$PKG"

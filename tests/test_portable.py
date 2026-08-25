@@ -206,6 +206,9 @@ def test_cli_stdout_pure_json(tmp_path):
     env = os.environ.copy()
     repo_root = __import__("pathlib").Path(__file__).parents[1]
     env["PYTHONPATH"] = str(repo_root)
+    # offline: sin esto el subproceso golpea RPC AUR real y puede descargar
+    # distfiles (_compute_hashes) — red no permitida en tests sin marker
+    env["AUR2XBPS_OFFLINE"] = "1"
     r = subprocess.run(
         [sys.executable, "-m", "src.cli", "template", "cbonsai",
          "--out", str(tmp_path / "sp"), "--no-sync"],

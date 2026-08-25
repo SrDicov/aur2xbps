@@ -88,7 +88,7 @@ def test_builder_run_propaga_timeout(monkeypatch):
 
     seen = {}
 
-    def fake_run(cmd, check, env=None, timeout=None):
+    def fake_run(cmd, check, env=None, timeout=None, cwd=None):
         seen["timeout"] = timeout
         return subprocess.CompletedProcess(cmd, 0)
 

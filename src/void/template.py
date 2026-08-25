@@ -60,10 +60,9 @@ def choose_build_style(pkg: SrcInfoPackage, urls: list[str]) -> str:
     (.deb/.rpm/.AppImage) son precompilados; tarballs/zip son FUENTE.
     """
     name = pkg.pkgname.lower()
-    looks_prebuilt = (
-        name.endswith("-bin")
-        or any(u.lower().split("?")[0].split("#")[0].endswith(BIN_SUFFIXES)
-               for u in urls))
+    # doctrina única compartida (mismo predicado que el motor Nix y musl)
+    from src.common.binpkg import is_precompiled
+    looks_prebuilt = is_precompiled(pkg.pkgname, pkg.pkgbase, urls)
     if looks_prebuilt:
         return ""  # fetch: sin build_style, do_install manual
     if not urls:

@@ -85,20 +85,18 @@ def test_smoke_sin_binarios(mv, tmp_path):
 # ------------------------------------------------------ elevador privilegios
 def test_sudo_prefix_detecta_doas(monkeypatch):
     from src.common import tools
-    tools.sudo_prefix.cache_clear() if hasattr(tools.sudo_prefix, "cache_clear") else None
     monkeypatch.delenv("AUR2XBPS_PRIV", raising=False)
     # sin sudo en PATH → cae a doas (Void)
-    real_which = __import__("shutil").which
-
     def fake_which(name):
         return "/usr/bin/doas" if name == "doas" else None
 
     monkeypatch.setattr("shutil.which", fake_which)
     assert tools.sudo_prefix() == ["doas"]
 
-    # override explícito por env gana
-    monkeypatch.setenv("AUR2XBPS_PRIV", "pkexec")
-    assert tools.sudo_prefix() == ["pkexec"]
+    # override explícito por env gana; pkexec NO es prefijo (shape propia,
+    # ver tests/test_priv.py) → override con forma prefijo válida
+    monkeypatch.setenv("AUR2XBPS_PRIV", "sudo -u root")
+    assert tools.sudo_prefix() == ["sudo", "-u", "root"]
 
 
 def test_sudo_prefix_error_claro_sin_elevador(monkeypatch):

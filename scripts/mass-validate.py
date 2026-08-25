@@ -36,7 +36,6 @@ import subprocess
 import sys
 import tarfile
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +44,7 @@ sys.path.insert(0, str(REPO))
 
 from src.common.paths import DEFAULT_DB            # noqa: E402
 from src.common.tools import has_nix               # noqa: E402
+from src.common.config import get_config           # noqa: E402
 
 
 @dataclass
@@ -152,13 +152,6 @@ def run_cli(args: list[str], timeout: int, pkg: str = "", engine: str = "",
     if payload is None:
         payload = {"ok": True, "unparsed": True}
     return rc, payload, err_txt[-800:]
-
-
-def _as_text(data) -> str:
-    if data is None:
-        return ""
-    return (data.decode("utf-8", errors="replace")
-            if isinstance(data, bytes) else str(data))
 
 
 def _save_logs(logdir: Path | None, pkg: str, engine: str,
@@ -353,8 +346,6 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=20260823)
     ap.add_argument("--engine", choices=["both", "nix", "xbps-src"],
                     default="both")
-    ap.add_argument("--workers", type=int, default=6,
-                    help="paralelismo de preparación RPC/clone")
     ap.add_argument("--timeout", type=int,
                     default=int(os.environ.get("AUR2XBPS_BUILD_TIMEOUT", 3600)))
     ap.add_argument("--min-free-mb", type=int, default=1500)
@@ -437,11 +428,14 @@ def main() -> int:
             break
         if free_mb() < args.min_free_mb:
             print(f"[{i}/{len(queue)}] disco bajo ({free_mb()}MB): limpieza…")
-            vp = Path(os.environ.get("AUR2XBPS_VP",
-                      Path.home() / ".local/share/aur2xbps/void/void-packages"))
+            vp = Path(os.environ.get(
+                "AUR2XBPS_VP", str(get_config().void_packages_dir)))
             if vp.exists():
-                subprocess.run(["./xbps-src", "clean", "ALL"], cwd=vp,
-                               capture_output=True, timeout=600)
+                try:
+                    subprocess.run(["./xbps-src", "clean", "ALL"], cwd=vp,
+                                   capture_output=True, timeout=600)
+                except subprocess.TimeoutExpired:
+                    print("  xbps-src clean excedió 600s: continuando")
                 shutil.rmtree(vp / "hostdir" / "sources", ignore_errors=True)
             if has_nix():
                 try:

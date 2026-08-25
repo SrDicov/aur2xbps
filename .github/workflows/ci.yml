@@ -9,9 +9,13 @@ on:
 # runner.* NO está disponible ahí (rompe el parseo completo del workflow).
 # Cada job define su workspace temporal en pasos concretos.
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
       TRH_PACKAGES: ${{ vars.TRH_PACKAGES || 'hello' }}
@@ -34,11 +38,12 @@ jobs:
             sandbox = true
       - name: Nix flake check + linter patchelf
         run: |
-          nix flake check --option sandbox true || true
+          nix build .#checks.x86_64-linux.lint-patchelf --option sandbox true
           python3 -m src.nix.patchelf
 
   trh:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
     steps:
@@ -65,6 +70,7 @@ jobs:
 
   tiar:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v27
@@ -96,6 +102,7 @@ jobs:
             };
           }
           NIX
-          OUT=$(nix build .#canary --no-link --print-out-paths >/dev/null 2>&1; cat "$(nix build .#canary --no-link --print-out-paths)" 2>/dev/null || echo SIN_RESULTADO)
+          OUT_PATH=$(nix build .#canary --no-link --print-out-paths 2>/dev/null | tail -n1 || true)
+          OUT=$(cat "$OUT_PATH" 2>/dev/null || echo SIN_RESULTADO)
           echo "$OUT" | grep -qE "CURL_BLOCKED_EXIT_6|Could not resolve host" \
             && echo "TIAR OK: egress bloqueado" || { echo "TIAR FALLO: $OUT"; exit 1; }

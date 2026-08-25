@@ -10,7 +10,7 @@
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        python = pkgs.python3.withPackages (ps: with ps; [ pytest pyyaml requests ]);
+        python = pkgs.python3.withPackages (ps: with ps; [ pytest pytest-timeout httpx pyyaml ]);
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
@@ -31,13 +31,16 @@
         };
         packages.aur2xbps = python.pkgs.buildPythonPackage {
           pname = "aur2xbps";
-          version = "0.1.0";
+          version = "0.2.0";
           src = ./.;
-          propagatedBuildInputs = with pkgs.python3Packages; [ requests pyyaml ];
+          pyproject = true;
+          build-system = with pkgs.python3Packages; [ setuptools wheel ];
+          propagatedBuildInputs = with pkgs.python3Packages; [ httpx pyyaml ];
           doCheck = false;
         };
-        checks.lint-patchelf = pkgs.runCommand "lint-patchelf" {} ''
-          ${python}/bin/python -m src.nix.patchelf --help > /dev/null
+        checks.lint-patchelf = pkgs.runCommand "lint-patchelf" { src = ./.; } ''
+          cd $src
+          ${python}/bin/python -m src.nix.patchelf > /dev/null
           touch $out
         '';
       }

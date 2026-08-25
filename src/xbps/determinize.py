@@ -75,7 +75,12 @@ def determinize_tar(raw_tar: bytes) -> bytes:
             continue
         hdr_name = block[0:100].rstrip(b"\0")
         size_field = block[124:136].rstrip(b"\0 ")
-        if hdr_name and size_field.startswith(b"0") or size_field.isdigit():
+        # Cabecera válida exige: nombre presente, tamaño octal/decimal ASCII
+        # (nunca high-bit → base-256 binario) y AMBAS condiciones sobre el
+        # MISMO bloque. La precedencia original sin paréntesis trataba como
+        # cabecera cualquier bloque cuyo size-field fuera dígitos puros.
+        es_ascii_size = (not size_field) or size_field.isdigit()
+        if hdr_name and not (size_field and size_field[0] & 0x80) and es_ascii_size:
             try:
                 size = int(size_field, 8) if size_field else 0
             except ValueError:

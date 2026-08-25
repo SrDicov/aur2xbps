@@ -38,7 +38,7 @@ def test_redact_cmd_oculta_privkey():
 def test_builder_run_no_filtra_ruta_en_stdout_ni_error(monkeypatch, capsys):
     from src.xbps import builder
 
-    def fake_run(cmd, check, env=None, timeout=None):
+    def fake_run(cmd, check, env=None, timeout=None, cwd=None):
         raise subprocess.CalledProcessError(1, cmd)
 
     monkeypatch.setattr(builder.subprocess, "run", fake_run)
