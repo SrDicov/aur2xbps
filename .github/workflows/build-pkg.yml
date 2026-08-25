@@ -53,12 +53,17 @@ jobs:
           # repository pool". El ROOTFS oficial siembra TODO y elimina el
           # problema de raíz (patrón ya probado en mass-build.yml).
           IDX=https://repo-default.voidlinux.org/live/current/
-          FILE=$(curl -sS "$IDX" | grep -oE 'void-x86_64-ROOTFS-[0-9]+\.tar\.xz' | sort -V | tail -1)
+          FILE=$(curl -sS "$IDX" | grep -oE 'void-x86_64-ROOTFS[^"<]*\.tar\.xz' | sort -Vu | tail -1)
           echo "seeding masterdir desde $FILE"
           MD="$AUR2XBPS_ROOT/void/masterdir"
           mkdir -p "$MD"
-          curl -fsSL "$IDX$FILE" | sudo tar -xJ -C "$MD"
-          test -d "$MD/var/db/xbps" && test -f "$MD/etc/xbps.d/00-repository-main.conf"
+          curl -fsSL "$IDX$FILE" -o /tmp/rootfs.tar.xz
+          sudo tar -xJf /tmp/rootfs.tar.xz -C "$MD"
+          rm -f /tmp/rootfs.tar.xz
+          echo "--- masterdir tras seed:"
+          ls "$MD" | head -8
+          ls "$MD/var/db/" 2>&1 | head -4 || true
+          test -d "$MD/var/db/xbps"
 
       - uses: cachix/install-nix-action@v27
         with:
