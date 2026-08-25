@@ -11,7 +11,9 @@ description = "fingerprints PGP públicos en metadatos AUR y ejemplos de docs"
 paths = [
   '''tests/fixtures/srcinfo/.*\.SRCINFO''',
 ]
+# SOLO fingerprints precedidos de `validpgpkeys=` (contexto PGP público).
+# El regex hex genérico anterior whitelteaba CUALQUIER cadena ≥16 hex en
+# TODO el repo (enmascaraba secretos tipo AWS de 40 hex) → eliminado.
 regexes = [
-  '''(?i)validpgpkeys\s*=''',
-  '''m?[0-9A-F]{16,40}''',
+  '''(?i)validpgpkeys\s*=\s*["']?[0-9A-Fa-f]{16,40}''',
 ]

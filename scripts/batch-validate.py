@@ -9,7 +9,6 @@ Registra resultados en <workspace>/batch-results.json
 """
 from __future__ import annotations
 import json
-import shutil
 import subprocess
 import sys
 import time
@@ -72,7 +71,7 @@ def run_one(pkg: str, smoke_bins) -> dict:
         xr = full_pipeline(nix_result=out / "result", pkgname=attr,
                            pkgver=pkgver, desc=f"{pkg} via aur2xbps",
                            smoke_binaries=bins)
-        rec["stages"]["xbps-create"] = r.xbps_path is not None if False else xr.xbps_path is not None
+        rec["stages"]["xbps-create"] = xr.xbps_path is not None
         rec["stages"]["sign"] = xr.signed
         rec["stages"]["chroot-install"] = xr.installed
         rec["stages"]["smoke"] = xr.smoke_ok
@@ -99,6 +98,7 @@ def main():
         print("uso: batch-validate.py <pkg[:bin1,bin2]> [pkg…]  — sin lote fijo en código")
         return 0
     results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
+    run_failed = False
     for spec in only:
         pkg, _, bins_spec = spec.partition(":")
         bins = bins_spec.split(",") if bins_spec else None
@@ -109,6 +109,7 @@ def main():
         rec = run_one(pkg, bins)
         results[pkg] = rec
         icon = "✅" if rec["ok"] else "❌"
+        run_failed = run_failed or not rec["ok"]
         print(f"{icon} {pkg}: {rec['detail'][:120]} [{rec['seconds']}s]", flush=True)
         RESULTS.write_text(json.dumps(results, indent=2))
 
@@ -119,7 +120,9 @@ def main():
         mark = "✅" if r.get("ok") else "❌"
         stage = r.get("error_stage") or "-"
         print(f"{mark} {pkg:35s} {stage:20s} {r.get('detail','')[:70]}")
+    # exit code refleja el resultado de ESTA ejecución (CI puede fallar)
+    return 1 if run_failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -65,6 +65,24 @@ def test_smoke_extrae_y_ejecuta_binario(mv, tmp_path):
     assert r["bin"] == "hello"
 
 
+def test_smoke_fallback_stream_zstd(mv, tmp_path, monkeypatch):
+    """python <3.14 sin tarfile-zstd: el stream vía binario zstd también
+    debe extraer y ejecutar (ruta del runner 3.11)."""
+    import tarfile as _tf
+    real_open = _tf.open
+
+    def fake_open(*args, **kw):
+        if kw.get("mode") == "r:zst":
+            raise _tf.CompressionError("zstd no integrado (simulado)")
+        return real_open(*args, **kw)
+
+    monkeypatch.setattr(_tf, "open", fake_open)
+    xbps = _make_xbps(tmp_path, {"usr/bin/hello": "#!/bin/sh\necho hi\n"})
+    r = mv.smoke_functional(xbps, timeout=15)
+    assert r["smoke"] is True, r
+    assert r["bin"] == "hello"
+
+
 def test_smoke_sigue_symlink_usr_bin(mv, tmp_path):
     # paquete estilo bundle: binario real en lib, enlace en usr/bin
     xbps = _make_xbps(tmp_path, {
@@ -85,20 +103,18 @@ def test_smoke_sin_binarios(mv, tmp_path):
 # ------------------------------------------------------ elevador privilegios
 def test_sudo_prefix_detecta_doas(monkeypatch):
     from src.common import tools
-    tools.sudo_prefix.cache_clear() if hasattr(tools.sudo_prefix, "cache_clear") else None
     monkeypatch.delenv("AUR2XBPS_PRIV", raising=False)
     # sin sudo en PATH → cae a doas (Void)
-    real_which = __import__("shutil").which
-
     def fake_which(name):
         return "/usr/bin/doas" if name == "doas" else None
 
     monkeypatch.setattr("shutil.which", fake_which)
     assert tools.sudo_prefix() == ["doas"]
 
-    # override explícito por env gana
-    monkeypatch.setenv("AUR2XBPS_PRIV", "pkexec")
-    assert tools.sudo_prefix() == ["pkexec"]
+    # override explícito por env gana; pkexec NO es prefijo (shape propia,
+    # ver tests/test_priv.py) → override con forma prefijo válida
+    monkeypatch.setenv("AUR2XBPS_PRIV", "sudo -u root")
+    assert tools.sudo_prefix() == ["sudo", "-u", "root"]
 
 
 def test_sudo_prefix_error_claro_sin_elevador(monkeypatch):

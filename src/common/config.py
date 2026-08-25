@@ -36,6 +36,7 @@ import sys
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+from typing import Dict, List
 
 # ---------------------------------------------------------------- XDG helpers
 
@@ -69,6 +70,13 @@ ARCH_MAP: dict[str, tuple[str, str, str]] = {
 DEFAULT_ARCH = ARCH_MAP.get(platform.machine().lower(),
                             ARCH_MAP["x86_64"])[0]
 
+#: intérprete ELF dinámico musl por arch XBPS (glibc vive en ARCH_MAP)
+MUSL_INTERPRETER: dict[str, str] = {
+    "x86_64": "/lib/ld-musl-x86_64.so.1",
+    "aarch64": "/lib/ld-musl-aarch64.so.1",
+    "i686": "/lib/ld-musl-i686.so.1",
+}
+
 
 def detect_arch() -> str:
     env = os.environ.get("AUR2XBPS_ARCH")
@@ -77,13 +85,62 @@ def detect_arch() -> str:
     return DEFAULT_ARCH
 
 
-def dynamic_linker(arch: str | None = None) -> str:
-    """Intérprete ELF dinámico estándar FHS para la arquitectura dada."""
-    arch = (arch or detect_arch()).lower()
-    for xb, interp, _ in ARCH_MAP.values():
-        if xb == arch:
-            return interp
-    return ARCH_MAP["x86_64"][1]
+def _probe_libc() -> str:
+    """Sonda del host: 'musl' o 'glibc' vía ldd --version."""
+    import shutil
+    import subprocess
+    ldd = shutil.which("ldd")
+    if ldd:
+        try:
+            r = subprocess.run([ldd, "--version"], capture_output=True,
+                               text=True, timeout=10)
+            blob = (r.stdout + r.stderr).lower()
+            if "musl" in blob:
+                return "musl"
+            if "glibc" in blob or "gnu libc" in blob or r.returncode == 0:
+                return "glibc"
+        except Exception:                                # noqa: BLE001
+            pass
+    return "glibc"          # default histórico del proyecto
+
+
+def detect_libc() -> str:
+    """libc objetivo: override AUR2XBPS_LIBC > sonda ldd del host."""
+    env = os.environ.get("AUR2XBPS_LIBC", "").strip().lower()
+    if env in ("glibc", "musl"):
+        return env
+    return _probe_libc()
+
+
+def effective_libc(cfg: "Config | None" = None) -> str:
+    """Resuelve el campo libc de la config ('auto' → sonda host)."""
+    val = getattr(cfg, "libc", "auto") if cfg is not None \
+        else os.environ.get("AUR2XBPS_LIBC", "auto")
+    val = (val or "auto").strip().lower()
+    return detect_libc() if val == "auto" else val
+
+
+def xbps_arch(arch: str | None = None, cfg: "Config | None" = None) -> str:
+    """Arch con sabor XBPS completo: x86_64 | x86_64-musl | …"""
+    a = arch or (cfg.arch if cfg is not None else detect_arch())
+    return f"{a}-musl" if effective_libc(cfg) == "musl" else a
+
+
+def dynamic_linker(arch: str | None = None, libc: str | None = None) -> str:
+    """Intérprete ELF dinámico FHS para (arch, libc)."""
+    a = (arch or detect_arch()).lower()
+    lib = (libc or effective_libc()).lower()
+    entry = next((e for e in ARCH_MAP.values() if e[0] == a), None)
+    if entry is None:
+        # arch no mapeada: NO silenciar (contrato multi-arch); fallback aviso
+        print(f"[config] WARNING: arch '{a}' sin mapeo; usando x86_64",
+              file=sys.stderr)
+        entry = ARCH_MAP["x86_64"]
+        a = "x86_64"
+    if lib == "musl":
+        return MUSL_INTERPRETER.get(
+            a, f"/lib/ld-musl-{a}.so.1")
+    return entry[1]
 
 
 def nix_system(arch: str | None = None) -> str:
@@ -91,6 +148,8 @@ def nix_system(arch: str | None = None) -> str:
     for xb, _, system in ARCH_MAP.values():
         if xb == arch:
             return system
+    print(f"[config] WARNING: arch '{arch}' sin mapeo nix; usando "
+          "x86_64-linux", file=sys.stderr)
     return "x86_64-linux"
 
 
@@ -111,6 +170,9 @@ class Config:
     port: int = 8080
     # [build]
     arch: str = field(default_factory=detect_arch)
+    # libc objetivo: auto|glibc|musl (auto = detectar del host con ldd);
+    # en musl los precompilados AUR se descartan (ver security/binpkg)
+    libc: str = "auto"
     python_version: str | None = None   # None → autodetectar del masterdir
     signing_key: Path | None = None     # None → keys_dir/privkey.pem
     log_level: str = "INFO"
@@ -124,6 +186,9 @@ class Config:
     # intersección con validpgpkeys del .SRCINFO habilita exenciones del
     # filtro JS con cadena de custodia real.
     trusted_pgp_keys: List[str] = field(default_factory=list)
+    # [priv] command: elevador de privilegios forzado (misma semántica que
+    # AUR2XBPS_PRIV, p.ej. "doas -u root"); vacío → autodetección priv.py
+    priv_command: str = ""
 
     # ---- derivadas (no configurables) ----
     @property
@@ -215,6 +280,10 @@ def _apply_toml(cfg: Config, path: Path) -> None:
         if section == "nixpkgs_pins":
             cfg.nixpkgs_pins.update({str(k): str(v) for k, v in values.items()})
             continue
+        if section == "priv":
+            if values.get("command"):
+                cfg.priv_command = str(values["command"])
+            continue
         for k, v in values.items():
             if k not in known:
                 continue
@@ -245,6 +314,7 @@ def _apply_env(cfg: Config) -> None:
         "AUR2XBPS_HOST": "host",
         "AUR2XBPS_PORT": "port",
         "AUR2XBPS_ARCH": "arch",
+        "AUR2XBPS_LIBC": "libc",
     }
     path_fields = {"data_dir", "cache_dir", "repo_dir", "keys_dir", "masterdir",
                    "void_packages_dir", "nix_store_dir"}
@@ -293,8 +363,9 @@ def _resolve_derived(cfg: Config) -> None:
 def load_config(path: str | Path | None = None) -> Config:
     """Carga config con prioridad env > usuario > sistema > defaults.
 
-    Si se pasa ``path`` explícito, SOLO se usa ese archivo (sin fallbacks)
-    — semántica determinista para tests y despliegues.
+    ``path`` explícito sustituye el DESCUBRIMIENTO de TOML (no se buscan
+    ~/.config ni /etc), pero las variables AUR2XBPS_* SIEMPRE se aplican
+    encima — el entorno es la capa de override final por diseño.
     Compatibilidad legado: si no existe ningún TOML pero sí
     ``~/.config/aur2xbps/root`` (archivo con una ruta), se usa como data_dir.
     """

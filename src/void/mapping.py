@@ -66,7 +66,6 @@ MANUAL: dict[str, str | None] = {
     "sh": "dash",
     "sh4": "dash",
     "systemd": None,
-    "systemd-libs": None,
     # deps que fallaron en campaña 100-pkg v2
     "ImageMagick": "ImageMagick",
     "imagemagick": "ImageMagick",
@@ -81,6 +80,7 @@ MANUAL: dict[str, str | None] = {
     # dlopen de forma opcional → descartar (si una app la exige, fallará
     # en el smoke con "libsystemd" y se añadirá shim específico)
     "systemd-libs": None,
+    "libsystemd": None,
     "xdg-utils": "xdg-utils", "libxt": "libXt-devel",
     "libxcomposite": "libXcomposite-devel", "libxdamage": "libXdamage-devel",
     "libxfixes": "libXfixes-devel", "libxxf86vm": "libXxf86vm-devel",

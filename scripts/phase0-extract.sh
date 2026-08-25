@@ -11,6 +11,7 @@ SRC_BASE="$WS/sources"
 REPO_AXX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 for pkg in "$@"; do
+  case "$pkg" in ""|*[!A-Za-z0-9._+-]*|.|..) echo "pkg inválido: $pkg" >&2; continue;; esac
   echo "=== $pkg ==="
   echo "[RPC] curl info"
   curl -sG "https://aur.archlinux.org/rpc/v5/info?arg[]=$pkg" | jq '.type, .resultcount' || true

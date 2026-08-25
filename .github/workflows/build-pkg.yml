@@ -15,6 +15,9 @@ on:
         default: nix
         options: [nix, xbps-src, auto]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -58,11 +61,12 @@ jobs:
       - name: Build paquetes (${{ inputs.engine }})
         env:
           PKGS: ${{ inputs.packages }}
+          ENGINE: ${{ inputs.engine }}
         run: |
           FAILED=""
           for pkg in $PKGS; do
             echo "::group::=== $pkg ==="
-            if ! python3 -m src.cli build "$pkg" --engine "${{ inputs.engine }}" \
+            if ! python3 -m src.cli build "$pkg" --engine "$ENGINE" \
                  > "/tmp/log-$pkg.json" 2>"/tmp/err-$pkg.log"; then
               echo "::warning::$pkg FALLÓ"
               FAILED="$FAILED $pkg"
@@ -79,11 +83,13 @@ jobs:
 
       - name: Resumen
         if: always()
+        env:
+          PKGS: ${{ inputs.packages }}
         run: |
           {
             echo "## Paquetes solicitados"
             echo '```'
-            echo "${{ inputs.packages }}"
+            echo "$PKGS"
             echo '```'
             echo "## Artefactos (.xbps)"
             find "$AUR2XBPS_ROOT/repo" -name '*.xbps' -printf '%f\n' || echo "(ninguno)"

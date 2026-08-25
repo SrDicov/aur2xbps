@@ -177,7 +177,7 @@ def is_restricted(srcinfo) -> tuple[bool, str]:
 def validate_license(srcinfo: SrcInfo, allow_nonfree: bool = False) -> List[str]:
     """Filtra licencias no redistribuibles si repo será público."""
     warnings = []
-    nonfree_markers = {"custom", "unknown", "commercial", "proprietary", "EULA"}
+    nonfree_markers = {"custom", "unknown", "commercial", "proprietary", "eula"}
     for pname, pkg in srcinfo.packages.items():
         licenses = [l.lower() for l in pkg.license]
         for lic in licenses:

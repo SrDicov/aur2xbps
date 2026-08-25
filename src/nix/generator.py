@@ -72,7 +72,7 @@ DERIVATION_BIN = '''
             mkdir -p $out/usr/bin $out/usr/lib $out/opt
             # AppImage / binario suelto
             if [ -f "$src" ] && file "$src" | grep -q "ELF.*executable"; then
-              cp "$src" "$out/usr/bin/$(basename "${src%.*}")"
+              cp "$src" "$out/usr/bin/$(basename "$${{src%.*}}")"
             fi
             # Estructura FHS estándar
             cp -a usr $out/ 2>/dev/null || true
@@ -80,10 +80,10 @@ DERIVATION_BIN = '''
             # zips/tars sin estructura FHS: solo ELF ejecutables y shared objects
             if [ ! -e $out/usr ] && [ ! -e $out/opt ]; then
               mkdir -p "$out/bin" "$out/lib"
-              find . -maxdepth 3 -type f -exec sh -c \
-                'file "$1" | grep -q "ELF.*executable" && cp "$1" "$out/bin/"' _ {} \; 2>/dev/null || true
-              find . -maxdepth 3 -type f -name "*.so*" -exec sh -c \
-                'file "$1" | grep -q "ELF" && cp "$1" "$out/lib/"' _ {} \; 2>/dev/null || true
+              find . -maxdepth 3 -type f -exec sh -c \\
+                'file "$1" | grep -q "ELF.*executable" && cp "$1" "$out/bin/"' _ {{}} \\; 2>/dev/null || true
+              find . -maxdepth 3 -type f -name "*.so*" -exec sh -c \\
+                'file "$1" | grep -q "ELF" && cp "$1" "$out/lib/"' _ {{}} \\; 2>/dev/null || true
             fi
             # H-3.1: symlinks absolutos preservados del upstream apuntan al
             # filesystem del host (ej. /etc/shadow) o quedan rotos bajo $out.
@@ -108,9 +108,6 @@ DERIVATION_BIN = '''
                   fi
                   ;;
               esac
-            done
-            find $out -exec touch -h -d @0 {} +
-          '';
             done
             find $out -exec touch -h -d @0 {{}} +
           '';
@@ -158,7 +155,7 @@ ARCH_TO_NIX = {
     "libalpm": "pacman", "pacman": "pacman",
     # GUI core
     "gtk3": "gtk3", "gtk+3": "gtk3", "gtk4": "gtk4", "qt5-base": "qt5.qtbase",
-    "qt6-base": "qt6.qtbase", "pango": "pango", "cairo": "cairo",
+    "qt6-base": "qt6.qtbase", "qt6-svg": "qt6.qtsvg", "pango": "pango", "cairo": "cairo",
     "glib2": "glib", "glib": "glib", "gdk-pixbuf2": "gdk-pixbuf",
     "at-spi2-core": "at-spi2-core", "at-spi2-atk": "at-spi2-atk",
     "libayatana-appindicator": "libayatana-appindicator",
@@ -210,10 +207,6 @@ ARCH_TO_NIX = {
     "python": "python3", "nodejs": "nodejs", "npm": "nodejs",
     "rust": "rustc", "cargo": "cargo", "go": "go",
 }
-
-# Prefijos que indican binario precompilado
-BIN_URL_EXTS = (".deb", ".rpm", ".AppImage", ".tar.zst", ".tar.gz", ".tgz")
-
 
 REPOLOGY_TABLE: dict[str, str] = {}
 
@@ -317,22 +310,18 @@ def _pick_hash(pkg: SrcInfoPackage):
     return "sha256", "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 
+def _base_nix_input() -> str:
+    """Attr nixpkgs de la libc objetivo: 'glibc' | 'musl'. Los fallbacks de
+    build_inputs NUNCA deben hardcodear 'glibc' (en Void-musl el .xbps
+    resultante dependería de una libc inexistente en el host)."""
+    from src.common.config import effective_libc
+    return "musl" if effective_libc() == "musl" else "glibc"
+
+
 def _is_bin(pname: str, pkgbase: str, url: str) -> bool:
-    """Precompilado si el nombre lo indica, o formatos inequívocamente
-    binarios (deb/rpm/AppImage). Los tarballs (.tar.gz/.zip/.tgz) son
-    ambiguos → se tratan como FUENTE; los -bin reales ya traen -bin en
-    el nombre y sus assets también suelen llamarse igual."""
-    if pname.endswith("-bin") or pkgbase.endswith("-bin"):
-        return True
-    low = url.lower()
-    # Extensiones binarias inequívocas
-    if any(low.endswith(e) or e + "?" in low
-           for e in (".deb", ".rpm", ".appimage")):
-        return True
-    # Patrones de releases GitHub con binarios: /releases/download/vX.Y.Z/binary
-    if "releases/download/" in low and not low.endswith((".tar.gz", ".tgz", ".tar.xz", ".zip", ".tar.bz2")):
-        return True
-    return False
+    """Precompilado según doctrina única (src.common.binpkg)."""
+    from src.common.binpkg import is_precompiled
+    return is_precompiled(pname, pkgbase, [url])
 
 
 class VCSPackageError(RuntimeError):
@@ -358,11 +347,20 @@ def _vcs_repo_url(url: str) -> str:
 def pin_git_rev(repo_url: str, timeout: int = 60) -> str:
     """Obtiene el commit HEAD actual vía git ls-remote (sin clonar).
     Ese rev se fija en la derivación: reproducible hasta que se re-pinnee."""
-    r = subprocess.run(["git", "ls-remote", repo_url, "HEAD"],
+    url = repo_url.strip()
+    # La URL proviene del .SRCINFO (input AUR): un valor que empiece por '-'
+    # sería parseado como opción de git (--upload-pack=… ejecuta comandos).
+    if not re.match(r"^(https?://|git://|ssh://)", url, re.I):
+        raise VCSPackageError(
+            f"URL VCS no soportada (requiere http(s)://, git:// o ssh://): {url[:80]}")
+    r = subprocess.run(["git", "ls-remote", "--", url, "HEAD"],
                        capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
-        raise VCSPackageError(f"git ls-remote falló para {repo_url}: {r.stderr[:200]}")
-    return r.stdout.split()[0]
+        raise VCSPackageError(f"git ls-remote falló para {url}: {r.stderr[:200]}")
+    parts = r.stdout.split()
+    if not parts:
+        raise VCSPackageError(f"git ls-remote sin salida para {url}")
+    return parts[0]
 
 
 
@@ -375,7 +373,11 @@ def detect_ecosystem(pkg: SrcInfoPackage) -> str:
     all_dep_str = " ".join(pkg.makedepends_for() + pkg.depends_for()).lower()
     name = pkg.pkgname.lower()
     base = pkg.pkgbase.lower()
-    if any(name.startswith(s) or base == s for s in ("dwm", "st", "slstatus", "sent", "slock")):
+    # Coincidencia exacta o sufijo "-variant" (st-git, dwm-flexipatch):
+    # un startswith("st") puro capturaba steam/stlink/stellarium…
+    _SUCKLESS = ("dwm", "st", "slstatus", "sent", "slock")
+    if any(name == s or name.startswith(s + "-") or
+           base == s or base.startswith(s + "-") for s in _SUCKLESS):
         return "suckless"
     # ecosistemas con fetch de dependencias propio: requieren builders
     # dedicados con hash de vendor (paru=Rust, yay=Go)
@@ -404,45 +406,6 @@ def detect_ecosystem(pkg: SrcInfoPackage) -> str:
     return "autotools"
 
 
-DERIV_PYTHON_PEP517 = """
-        "{pkgname}" = pkgs.stdenv.mkDerivation rec {{
-          pname = "{pkgname}";
-          version = "{pkgver}";
-          src = pkgs.fetchurl {{
-            url = "{url}";
-            {hash_attr} = "{hash_val}";
-          }};
-          format = "other";
-          nativeBuildInputs = with pkgs; [
-            {native_inputs}
-            python3Packages.build python3Packages.pip python3Packages.wheel file
-          ];
-          buildInputs = with pkgs; [ {build_inputs} ];
-          dontStrip = true;
-          buildPhase = ''
-            runHook preBuild
-            export SOURCE_DATE_EPOCH=0
-            python -m build --wheel --no-isolation --outdir dist/
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            WHEEL=$(ls dist/*.whl | head -n1)
-            PYVER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-            SP="$out/usr/lib/python$PYVER/site-packages"
-            mkdir -p "$SP" "$out/usr/bin"
-            # Wheel = zip con rutas relativas → extraer directo a site-packages Void
-            unzip -q -o "$WHEEL" -d "$SP"
-            find "$out" -exec touch -h -d @0 {{}} +
-            runHook postInstall
-          '';
-          meta = with pkgs.lib; {{
-            description = "{pkgdesc}";
-            platforms = [ "{nix_system}" ];
-          }};
-        }};
-"""
-
 DERIV_CMAKE = """
         "{pkgname}" = pkgs.stdenv.mkDerivation rec {{
           pname = "{pkgname}";
@@ -451,7 +414,7 @@ DERIV_CMAKE = """
             url = "{url}";
             {hash_attr} = "{hash_val}";
           }};
-          nativeBuildInputs = with pkgs; [ cmake ninja file wrapQtAppsHook {native_inputs} ];
+          nativeBuildInputs = with pkgs; [ cmake ninja file qt6.wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
@@ -481,7 +444,7 @@ DERIV_MESON = """
               *)     tar -xf $src --no-same-owner ;;
             esac
           '';
-          nativeBuildInputs = with pkgs; [ meson ninja pkg-config file wrapQtAppsHook {native_inputs} ];
+          nativeBuildInputs = with pkgs; [ meson ninja pkg-config file qt6.wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
@@ -779,7 +742,7 @@ ECO_BODIES = {
           \'\';
 """,
     "cmake": """
-          nativeBuildInputs = with pkgs; [ cmake ninja file {native_inputs} ];
+          nativeBuildInputs = with pkgs; [ cmake ninja file qt6.wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
 """,
     "meson": """
@@ -802,7 +765,7 @@ ECO_BODIES = {
             fi
             runHook postUnpack
           '';
-          nativeBuildInputs = with pkgs; [ meson ninja pkg-config file {native_inputs} ];
+          nativeBuildInputs = with pkgs; [ meson ninja pkg-config file qt6.wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
 """,
     "python-legacy": """
@@ -830,25 +793,6 @@ ECO_BODIES = {
           buildInputs = with pkgs; [ {build_inputs} ];
 """,
 }
-
-DERIVATION_VCS = '''
-        "{pkgname}" = pkgs.stdenv.mkDerivation rec {{
-          pname = "{pkgname}";
-          version = "{pkgver}";
-          src = pkgs.fetchgit {{
-            url = "{url}";
-            rev = "{rev}";
-            hash = "{hash_val}";
-          }};
-          nativeBuildInputs = with pkgs; [ {native_inputs} ];
-          buildInputs = with pkgs; [ {build_inputs} ];
-          makeFlags = [ "PREFIX=$(out)" ];
-{install_guard}          meta = with pkgs.lib; {{
-            description = "{pkgdesc} (VCS pinneado a {rev_short})";
-            platforms = [ "{nix_system}" ];
-          }};
-        }};
-'''
 
 
 ARCHIVE_EXTS = (".deb", ".rpm", ".appimage", ".zip", ".tar.gz", ".tgz",
@@ -895,15 +839,9 @@ def _native_inputs_for_url(url: str, base: str) -> str:
     return f"{base} {' '.join(extra)}".strip()
 
 
-def _rpath_extra(arch: str) -> str:
-    """Rutas RUNPATH extra según arch: /usr/lib64 solo existe en x86_64."""
-    return "/usr/lib:/usr/lib64" if arch == "x86_64" else "/usr/lib"
-
-
 def generate_flake(srcinfo: SrcInfo, out_dir: Path,
                    nixos_ref: str = NIXOS_REF,
-                   eco_override: str | None = None,
-                   force_autoreconf: bool = False) -> Path:
+                   eco_override: str | None = None) -> Path:
     """Genera flake.nix con una derivación por subpaquete."""
     from src.common.config import get_config, nix_system as _nix_system
     out_dir = Path(out_dir)
@@ -949,18 +887,23 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
 ''')
                 continue
             eco_body_fmt = ECO_BODIES.get(eco_vcs, ECO_BODIES["autotools"])
+            # Filter out cmake/ninja from native_inputs since they're in template
+            filtered_native = native_inputs
+            if eco_vcs in ("cmake", "meson"):
+                for dep in ("cmake", "ninja"):
+                    filtered_native = " ".join(x for x in filtered_native.split() if x != dep)
             if eco_vcs == "autotools":
                 md_names = [re.split(r"[<>=]", d)[0].strip()
                             for d in pkg.makedepends_for()]
-                eco_body_fmt += ("\n          autoreconfHook = "
-                                 + str(any(x in md_names for x in
-                                           ("automake", "autoconf", "libtool"))).lower()
-                                 + ";")
+                # El hook debe vivir en nativeBuildInputs: un attr Nix suelto
+                # (`autoreconfHook = true;`) no instala nada.
+                if any(x in md_names for x in ("automake", "autoconf", "libtool")):
+                    filtered_native += " autoreconfHook"
                 # anti-fantasma: VCS sin fases propias dejaba $out vacío
                 # (neofetch empaquetaba 531B sin binarios)
                 eco_body_fmt += INSTALL_GUARD_PHASE
             eco_body = eco_body_fmt.format(
-                native_inputs=native_inputs, build_inputs=build_inputs or "glibc")
+                native_inputs=filtered_native, build_inputs=build_inputs or _base_nix_input())
             drv = DERIV_VCS_ECO.format(
                 pkgname=pname, pkgver=pkg.pkgver, url=repo, rev=rev,
                 rev_short=rev[:7], hash_val="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -970,23 +913,22 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
             derivations.append(drv)
             continue
 
+        fmt_kwargs: dict = {}
         if _is_bin(pname, srcinfo.pkgbase, url):
             template = DERIVATION_BIN
-            fmt_kwargs = dict(rpath_extra=_rpath_extra(cfg_arch))
-            build_inputs_str = map_deps_to_nix(pkg.depends_for(), strict=True) or "glibc"
+            build_inputs_str = map_deps_to_nix(pkg.depends_for(), strict=True) or _base_nix_input()
         else:
             eco = eco_override or detect_ecosystem(pkg)
             template = ECOSYSTEM_TEMPLATES.get(eco, DERIVATION_SOURCE)
-            fmt_kwargs = {}
             if eco == "autotools":
                 md_names = [re.split(r"[<>=]", d)[0].strip()
                             for d in pkg.makedepends_for()]
                 # Muchos Makefiles invocan autoreconf internamente (ej. gnomato);
                 # siempre habilitar autoreconfHook para ecosistema autotools.
-                needs_ar = force_autoreconf or True
+                needs_ar = True
                 fmt_kwargs["needs_autoreconf"] = str(needs_ar).lower()
                 fmt_kwargs["install_guard"] = INSTALL_GUARD_PHASE
-            build_inputs_str = build_inputs or "glibc"
+            build_inputs_str = build_inputs or _base_nix_input()
         drv = template.format(
             pkgname=pname,
             pkgver=pkg.pkgver,
@@ -1065,13 +1007,11 @@ def _dedupe_inputs(spec: str) -> str:
 
 
 def transpile(srcinfo: SrcInfo, out_dir: Path,
-              eco_override: str | None = None,
-              force_autoreconf: bool = False) -> Path:
+              eco_override: str | None = None) -> Path:
     """API de alto nivel: genera flake + lock + lint. Lanza si lint falla."""
     flake = generate_flake(srcinfo, out_dir,
                            nixos_ref=resolve_nixos_ref(srcinfo),
-                           eco_override=eco_override,
-                           force_autoreconf=force_autoreconf)
+                           eco_override=eco_override)
     errs = lint_flake_patchelf(flake)
     if errs:
         raise RuntimeError(f"Linter patchelf falló: {errs}")
@@ -1092,20 +1032,6 @@ SPECIFIED_GOT_RE = re.compile(
 UNDEF_VAR_RE = re.compile(r"undefined variable '([A-Za-z0-9_.-]+)'")
 # Attr que existe pero lanza (ej. python2): mismo tratamiento
 REMOVED_RE = re.compile(r"([\w][\w.-]*)\s*=\s*throw \"[^\"]*has been removed")
-
-
-# macros .m4 de dependencias (AM_GLIB_GNU_GETTEXT, PKG_PROG_PKG_CONFIG…)
-# viven en <dep>/share/aclocal y aclocal NO las descubre solo. Texto FINAL
-# de nix (sin pasar por .format: shell ${..} chocaría con las llaves).
-AUTORECONF_ACLOCAL = """          # recolecta macros .m4 de los inputs
-          preAutoreconf = pkgs.lib.optionalString true ''
-            for d in $buildInputs $nativeBuildInputs; do
-              if [ -d "$d/share/aclocal" ]; then
-                export ACLOCAL_PATH="''${ACLOCAL_PATH:+''${ACLOCAL_PATH}:}$d/share/aclocal"
-              fi
-            done
-          '';
-"""
 
 
 def _drop_undefined_var(flake_path: Path, name: str) -> bool:
@@ -1164,16 +1090,18 @@ def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 5,
         got = m.group(1)
         content = flake.read_text()
         # (a) placeholder canónico (fetchgit/fetchurl/vendorHash de cargo/go):
-        #     sustitución global — cada placeholder espera SU hash real y Nix
-        #     solo reporta el primer FOD fallido por intento
+        #     sustituir SOLO la primera ocurrencia por intento. Nix reporta un
+        #     FOD fallido a la vez; un replace global estamparía el hash del
+        #     primer FOD en TODOS los placeholders de flakes multi-derivación
+        #     (split packages), contaminando derivaciones ya correctas.
         if HASH_DUMMY in content:
-            content_new = content.replace(HASH_DUMMY, got)
+            content_new = content.replace(HASH_DUMMY, got, 1)
         else:
-            # (b) hash especificado ≠ real: sustituir TODAS las ocurrencias
-            #     del especificado por el reportado (vendor único en la práctica)
+            # (b) hash especificado ≠ real: primera ocurrencia del especificado
+            #     (mismo argumento anti-contagio que en (a))
             sg = SPECIFIED_GOT_RE.search(combined)
             if sg and sg.group(1) in content:
-                content_new = content.replace(sg.group(1), sg.group(2))
+                content_new = content.replace(sg.group(1), sg.group(2), 1)
                 got = sg.group(2)
             else:
                 # (c) legado: un solo fetchurl → reescribir su hash

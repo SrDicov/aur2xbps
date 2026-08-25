@@ -13,7 +13,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -52,10 +52,24 @@ class AURClient:
     def _connect(self) -> sqlite3.Connection:
         """Conexión endurecida (H-1.1): WAL permite lectores concurrentes con
         escritura; busy_timeout absorbe locks breves de otros procesos
-        (vouru + CLI comparten cache.db)."""
+        (vouru + CLI comparten cache.db). El propio PRAGMA journal_mode=WAL
+        puede chocar con un writer activo → reintentos cortos (el test de
+        8 procesos lo detonaba de forma determinista en runners lentos)."""
         conn = sqlite3.connect(self.db_path, timeout=5.0)
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
+        last: Exception | None = None
+        for attempt in range(DB_BUSY_RETRIES):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "locked" not in msg and "busy" not in msg:
+                    raise
+                last = e
+                time.sleep(0.05 * (2 ** attempt))
+        else:
+            raise last  # type: ignore[misc]
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
@@ -189,14 +203,14 @@ class AURClient:
             try:
                 with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
                     resp = client.get(url, headers=headers)
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt <= self.max_retries:
+                    time.sleep(min(60.0, 2 ** attempt))  # 2,4,8,16... máx 60s
+                    continue
                 break
-            except (httpx.TransportError, httpx.HTTPStatusError) as e:
-                status = getattr(getattr(e, "response", None), "status_code", None)
-                retryable = isinstance(e, httpx.TransportError) or status in (429, 500, 502, 503, 504)
-                if not retryable or attempt > self.max_retries:
+            except httpx.TransportError:
+                if attempt > self.max_retries:
                     raise
-                backoff = min(60.0, 2 ** attempt)  # 2,4,8,16... máx 60s
-                time.sleep(backoff)
+                time.sleep(min(60.0, 2 ** attempt))
 
         if resp.status_code == 304 and cached:
             return cached[0]
@@ -242,7 +256,7 @@ class AURClient:
     def search(self, keyword: str, by: str = "name-desc") -> List[Dict]:
         if len(keyword) < 2:
             raise ValueError("Search requiere ≥2 chars")
-        data = self._get_json(f"/search/{keyword}", {"by": by})
+        data = self._get_json(f"/search/{quote(keyword, safe='')}", {"by": by})
         if data.get("type") == "error":
             raise RuntimeError(f"AUR search error: {data.get('error')}")
         results = data.get("results", [])

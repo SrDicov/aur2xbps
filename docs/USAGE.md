@@ -17,7 +17,13 @@ El instalador:
 4. **Nix es opcional**: si falta, avisa, ofrece instalarlo, o continúa en modo solo-plantillas (`xbps-src` como motor).
 5. Genera claves RSA en `$XDG_CONFIG_HOME/aur2xbps/keys` (privkey 600).
 6. Escribe `~/.config/aur2xbps/config.toml` con defaults portables.
-7. Instala servicio **runit**: como root en `/etc/runit/runsvdir/default/aur2xbps-repo` (activo con `sv up aur2xbps-repo`); como usuario en `~/.config/aur2xbps/runit/` (arranca con `runsvdir ~/.config/aur2xbps/runit &` o ejecuta el wrapper `~/.local/bin/aur2xbps-serve-repo`).
+7. Instala el servicio del repo con `./scripts/service-install.sh`: emite **runit** (sistema `/etc/runit/runsvdir/default/aur2xbps-repo` → `sv up aur2xbps-repo`, o usuario `~/.config/aur2xbps/runit/` + `runsvdir … &`) o **dinit** (sistema `/etc/dinit.d/aur2xbps-repo` → `dinitctl start`, o usuario `~/.config/dinit.d/` + `dinitctl --user start`). Alternativa directa: `~/.local/bin/aur2xbps-serve-repo`.
+
+## Elevador de privilegios
+El proyecto NUNCA invoca `sudo` literal. Orden: root › env `AUR2XBPS_PRIV` (p.ej. `doas -u root`) › TOML `[priv] command` › autodetección `sudo→doas→run0→pkexec→su`. `su` es último recurso (avisa: pide tty). pkexec resuelve rutas absolutas automáticamente.
+
+## Void-musl
+`AUR2XBPS_LIBC=auto|glibc|musl` (auto detecta con ldd). En musl los paquetes precompilados AUR (`-bin`, .deb/.rpm/.AppImage) se DESCARTAN automáticamente (upstream glibc, no ejecutan); forzar excepcionalmente con `AUR2XBPS_MUSL_ALLOW_BIN=1`. El masterdir xbps-src es único y del sabor objetivo; cambiar de libc re-bootstrapea.
 8. Deja el CLI en `~/.local/bin/aur2xbps`.
 
 ## Configuración

@@ -177,6 +177,17 @@ def cmd_build(args) -> int:
     return _build_with_xbps_src(args.pkg)
 
 
+def _masterdir_needs_rebootstrap(md, want_libc: str) -> bool:
+    """True si el masterdir existe con OTRO sabor libc (marcador .aur2xbps-libc;
+    directorios legados sin marca se asumen glibc)."""
+    md = Path(md)
+    if not (md / "etc").is_dir():
+        return False
+    have = (md / ".aur2xbps-libc").read_text().strip() \
+        if (md / ".aur2xbps-libc").is_file() else "glibc"
+    return have != want_libc
+
+
 def _build_with_xbps_src(pkgname: str) -> int:
     """Genera plantilla y compila con xbps-src (sin Nix)."""
     import os as _os
@@ -203,17 +214,34 @@ def _build_with_xbps_src(pkgname: str) -> int:
         _sh.copytree(tdir, dst)
     # 2. bootstrap si hace falta
     # xbps-src NO puede correr como root salvo XBPS_ALLOW_CHROOT_BREAKOUT (CI).
-    # Como no-root usa xbps-uchroot (sudo interno) — correr como dueño del árbol.
+    # Como no-root el propio xbps-src eleva internamente (xbps-uchroot vía el
+    # elevador del sistema) — correr como dueño del árbol.
     owner = vp.stat().st_uid
     if _os.getuid() == 0:
         priv = ["env", "XBPS_ALLOW_CHROOT_BREAKOUT=1"]
     else:
         priv = []
-    if not (cfg.effective_masterdir / "etc").is_dir():
+    # 2. bootstrap si hace falta — con sabor libc correcto.
+    #    El masterdir es ÚNICO y del sabor del objetivo: si cambia la libc
+    #    (marcador .aur2xbps-libc) se re-bootstrap desde cero (solo se
+    #    descarga lo que la máquina necesita).
+    from src.common.config import effective_libc, xbps_arch as _xarch
+    md = cfg.effective_masterdir
+    marker = md / ".aur2xbps-libc"
+    want_libc = effective_libc(cfg)
+    target_arch = _xarch(cfg.arch, cfg)
+    if _masterdir_needs_rebootstrap(md, want_libc):
+        print(f"[build] masterdir sabor libc ≠ objetivo '{want_libc}': "
+              "re-bootstrap…", file=sys.stderr)
+        from src.common.priv import priv_wrap as _pw
+        subprocess.run(_pw(["rm", "-rf", str(md)]), check=True, timeout=900)
+    if not (md / "etc").is_dir():
         print("[build] binary-bootstrap…", file=sys.stderr)
-        subprocess.run(priv + ["./xbps-src", "-A", cfg.arch,
+        subprocess.run(priv + ["./xbps-src", "-A", target_arch,
                                "binary-bootstrap"], cwd=vp,
                        check=True, timeout=cfg.build_timeout)
+        md.mkdir(parents=True, exist_ok=True)
+        marker.write_text(want_libc + "\n")
     # 3. limpiar estado stale: dobuild.sh toca el stamp *_build_done ANTES de
     #    instalar, así que un fallo posterior (pkglint) lo deja puesto y TODOS
     #    los retries siguientes se saltan fetch/extract/install en silencio
@@ -223,7 +251,7 @@ def _build_with_xbps_src(pkgname: str) -> int:
     # 4. compilar (-f fuerza re-ejecución de fases: sin esto, stamps
     #    *_install_done de intentos previos saltan do_install silenciosamente)
     r = subprocess.run(
-        priv + ["./xbps-src", "-f", "-A", cfg.arch, "pkg", pkgname], cwd=vp,
+        priv + ["./xbps-src", "-f", "-A", target_arch, "pkg", pkgname], cwd=vp,
         timeout=cfg.build_timeout)
     if r.returncode != 0:
         _die(f"xbps-src pkg {pkgname} falló ({r.returncode})", r.returncode or 5)
@@ -263,12 +291,10 @@ def _build_with_nix(pkgname: str) -> int:
     if not ok and "No targets specified and no makefile found" in msg \
             and "no configure script" in msg:
         # Tarball sin build system generado: probar meson y luego
-        # autotools con autoreconf forzado antes de rendirse
-        for override, force_ar in (("meson", False), ("autotools", True)):
-            print(f"[nix] fallback de ecosistema: → {override}"
-                  f"{'+autoreconf' if force_ar else ''}", file=sys.stderr)
-            transpile(pr.srcinfo, out_dir, eco_override=override,
-                      force_autoreconf=force_ar)
+        # autotools (autoreconfHook ya va siempre en ese ecosistema)
+        for override in ("meson", "autotools"):
+            print(f"[nix] fallback de ecosistema: → {override}", file=sys.stderr)
+            transpile(pr.srcinfo, out_dir, eco_override=override)
             ok, msg = build_with_hash_fix(out_dir, attr,
                                           timeout=max(cfg.build_timeout, 1800))
             if ok:

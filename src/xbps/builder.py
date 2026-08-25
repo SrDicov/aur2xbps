@@ -12,7 +12,8 @@ import hashlib
 from pathlib import Path
 from typing import List, Optional
 
-from src.common.tools import find_xbps_tool, sudo_prefix
+from src.common.tools import find_xbps_tool
+from src.common.priv import priv_wrap
 
 
 def XBPS_CREATE() -> str:  # noqa: N802 — API histórica, resuelve en runtime
@@ -42,10 +43,11 @@ def redact_cmd(cmd) -> List[str]:
     return out
 
 
-def _run(cmd: List[str], env: dict | None = None, timeout: int = 600):
+def _run(cmd: List[str], env: dict | None = None, timeout: int = 600,
+         cwd: str | Path | None = None):
     print("$", " ".join(redact_cmd(cmd)))
     try:
-        return subprocess.run(cmd, check=True, env=env, timeout=timeout)
+        return subprocess.run(cmd, check=True, env=env, timeout=timeout, cwd=cwd)
     except subprocess.TimeoutExpired as e:
         if isinstance(e.cmd, (list, tuple)):
             e.cmd = redact_cmd(e.cmd)
@@ -81,12 +83,12 @@ def create_xbps(
     env["TZ"] = "UTC"
     env["LC_ALL"] = "C"
     # Staging 100% determinista: mtime, owner, group, sorted (ver TRH test 2026-08-21)
-    # Orden mandatorio: touch -> chown -> sort; si chown falla sin sudo, reintentar con sudo
+    # Orden mandatorio: touch -> chown -> sort. chown 0:0 requiere root:
+    # intentar sin elevador y reintentar vía priv_wrap (sudo/doas/…)
     subprocess.run(["find", str(stage_dir), "-exec", "touch", "-h", "-d", "@0", "{}", ";"], check=False)
-    # chown 0:0 requiere root; intentar sin sudo y luego con sudo
     ret = subprocess.run(["find", str(stage_dir), "-exec", "chown", "-h", "0:0", "{}", ";"], capture_output=True)
     if ret.returncode != 0:
-        subprocess.run([*sudo_prefix(), "find", str(stage_dir), "-exec", "chown", "-h", "0:0", "{}", ";"], check=False)
+        subprocess.run(priv_wrap(["find", str(stage_dir), "-exec", "chown", "-h", "0:0", "{}", ";"]), check=False)
     # Verificación: todos los archivos con mtime 0 y uid 0 (debug opcional)
     # xbps-create usa libarchive con SOURCE_DATE_EPOCH; el chown asegura numeric-owner determinista
 
@@ -128,10 +130,10 @@ def create_xbps(
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         full_cmd = cmd
-        print(f"$ SOURCE_DATE_EPOCH=0 {' '.join(full_cmd)}")
-        subprocess.run(full_cmd, check=True, env=env, cwd=td)
+        # _run: timeout + redacción H-5.2 de argv (convención repo)
+        _run(full_cmd, env=env, cwd=td)
         # Buscar *.xbps en td
-        candidates = list(Path(td).glob("*.xbps"))
+        candidates = sorted(Path(td).glob("*.xbps"))
         if not candidates:
             raise RuntimeError("xbps-create no generó .xbps")
         generated = candidates[0]
@@ -196,7 +198,7 @@ def stage_from_nix_result(nix_result: Path, stage: Path):
         try:
             _shutil.rmtree(stage)
         except PermissionError:
-            subprocess.run([*sudo_prefix(), "rm", "-rf", str(stage)], check=False)
+            subprocess.run(priv_wrap(["rm", "-rf", str(stage)]), check=False)
             # reintentar si aún existe
             if stage.exists():
                 _shutil.rmtree(stage, ignore_errors=True)
@@ -234,7 +236,7 @@ def stage_from_nix_result(nix_result: Path, stage: Path):
     subprocess.run(["find", str(stage), "-exec", "touch", "-h", "-d", "@0", "{}", ";"], check=False)
     ret = subprocess.run(["find", str(stage), "-exec", "chown", "-h", "0:0", "{}", ";"], capture_output=True)
     if ret.returncode != 0:
-        subprocess.run([*sudo_prefix(), "find", str(stage), "-exec", "chown", "-h", "0:0", "{}", ";"], check=False)
+        subprocess.run(priv_wrap(["find", str(stage), "-exec", "chown", "-h", "0:0", "{}", ";"]), check=False)
     # Patchelf EEL se aplica antes de stage si viene de nix_result ya parcheado a Void; aquí solo normaliza
 
 if __name__ == "__main__":

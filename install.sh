@@ -29,12 +29,19 @@ fi
 ok "Void Linux detectado"
 
 # --------------------------------------------------------------- 2. privilegios
+# MISMO orden que src/common/priv.py: root › $AUR2XBPS_PRIV › autodetección
+# sudo → doas → run0 → pkexec → su. CERO hardcodeo del binario concreto.
 PRIV=""
-[ "$(id -u)" = "0" ] || {
-    if command -v doas >/dev/null 2>&1; then PRIV="doas";
-    elif command -v sudo >/dev/null 2>&1; then PRIV="sudo";
-    else err "necesitas doas o sudo para instalar paquetes del sistema"; exit 1; fi
-}
+if [ "$(id -u)" = "0" ]; then
+    :
+elif [ -n "${AUR2XBPS_PRIV:-}" ]; then
+    PRIV="$AUR2XBPS_PRIV"
+else
+    for t in sudo doas run0 pkexec su; do
+        if command -v "$t" >/dev/null 2>&1; then PRIV="$t"; break; fi
+    done
+    [ -n "$PRIV" ] || { err "sin root ni elevador (sudo/doas/run0/pkexec/su): exporta AUR2XBPS_PRIV=<comando>"; exit 1; }
+fi
 
 # --------------------------------------------------------------- 3. dependencias
 # Sincronizar repodata con fallback de mirror: la imagen/instalación vieja
@@ -44,9 +51,9 @@ PRIV=""
 xbps_sync() {
     $PRIV xbps-install -Sy "$@" >/dev/null 2>&1 && return 0
     warn "sincronización de repos falló; probando mirror repo-default.voidlinux.org…"
-    mkdir -p /etc/xbps.d
+    $PRIV mkdir -p /etc/xbps.d
     printf 'repository=https://repo-default.voidlinux.org/current\n' \
-        > /etc/xbps.d/00-repository-main.conf
+        | $PRIV tee /etc/xbps.d/00-repository-main.conf >/dev/null
     $PRIV xbps-install -Sy "$@"
 }
 
@@ -78,10 +85,13 @@ if command -v nix >/dev/null 2>&1; then
 else
     warn "nix no está instalado: se usará xbps-src como motor (modo solo-plantillas)"
     if ask "¿instalar Nix (multiusuario) ahora?"; then
-        curl -sSL https://install.determinate.systems/nix | sh -s -- install ||
+        # paso OPCIONAL: un fallo aquí no debe matar el instalador (set -e)
+        if curl -sSL https://install.determinate.systems/nix | sh -s -- install; then
+            [ -x /nix/var/nix/profiles/default/bin/nix ] && \
+                export PATH="/nix/var/nix/profiles/default/bin:$PATH" && NIX_MODE=nix
+        else
             warn "instalación de nix falló; continúa en modo solo-plantillas"
-        [ -x /nix/var/nix/profiles/default/bin/nix ] && \
-            export PATH="/nix/var/nix/profiles/default/bin:$PATH" && NIX_MODE=nix
+        fi
     fi
 fi
 
@@ -174,58 +184,17 @@ else
     ok "config.toml existente respetado"
 fi
 
-# --------------------------------------------------------------- 8. servicio runit
-# Void usa runit (no systemd). Servicio de sistema si somos root con /etc/sv;
-# si no, servicio de usuario bajo $USER_SERVICE_DIR (runsvdir del usuario).
-PORT="${AUR2XBPS_PORT:-8080}"
-SV_NAME="aur2xbps-repo"
-BIN_DIR="$HOME/.local/bin"
-mkdir -p "$BIN_DIR"
-
-_write_run_script() {
-    # $1 = destino del directorio del servicio
-    mkdir -p "$1"
-    cat > "$1/run" <<EOF
-#!/bin/sh
-# runit service: aur2xbps repo HTTP (sirve ${DATA_DIR}/repo)
-exec env PYTHONPATH="$SCRIPT_DIR" \\
-    python3 "$SCRIPT_DIR/scripts/serve-repo.py" \\
-    --host "${AUR2XBPS_HOST:-127.0.0.1}" --port "$PORT" \\
-    --docroot "$DATA_DIR/repo" 2>&1
-EOF
-    chmod +x "$1/run"
-}
-
-if [ -d /etc/runit ] && [ -w /etc/runit/runsvdir/default ] || [ "$(id -u)" = "0" ]; then
-    _write_run_script "/etc/runit/runsvdir/default/$SV_NAME"
-    if command -v sv >/dev/null 2>&1; then
-        sv down "$SV_NAME" 2>/dev/null || true   # limpiar estado previo si existía
-        sv up "$SV_NAME" 2>/dev/null && \
-            ok "servicio runit activo: sv status $SV_NAME" || \
-            warn "servicio creado; arranca en el próximo ciclo de runsvdir (o: sv up $SV_NAME)"
-    else
-        ok "servicio runit instalado en /etc/runit/runsvdir/default/$SV_NAME"
-    fi
-elif [ -d /etc/runit ]; then
-    USER_SV="${XDG_CONFIG_HOME:-$HOME/.config}/aur2xbps/runit"
-    _write_run_script "$USER_SV/$SV_NAME"
-    cat > "$BIN_DIR/aur2xbps-serve-repo" <<EOF
-#!/bin/sh
-export PYTHONPATH="$SCRIPT_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
-exec python3 "$SCRIPT_DIR/scripts/serve-repo.py" "\$@"
-EOF
-    chmod +x "$BIN_DIR/aur2xbps-serve-repo"
-    ok "servicio runit de usuario en $USER_SV/$SV_NAME"
-    echo ""
-    echo "  Para arrancarlo como servicio de usuario:"
-    echo "    runsvdir $USER_SV &          # una vez por sesión (o añádelo a tu autostart)"
-    echo "  Alternativa directa:"
-    echo "    $BIN_DIR/aur2xbps-serve-repo &"
+# --------------------------------------------------------------- 8. servicio (runit | dinit)
+# Detección y escritura delegadas: runit sistema/usuario o dinit
+# sistema/usuario según PID1/directorios. NUNCA systemd.
+if "$SCRIPT_DIR/scripts/service-install.sh"; then
+    ok "servicio del repo instalado (ver mensajes arriba)"
 else
-    warn "runit no detectado: sirve el repo manualmente con scripts/serve-repo.py"
+    warn "instalación del servicio falló; sirve el repo manualmente con scripts/serve-repo.py"
 fi
 
 # --------------------------------------------------------------- 9. CLI en PATH
+BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/aur2xbps" <<EOF
 #!/bin/sh
@@ -247,5 +216,5 @@ echo " Uso básico:"
 echo "   aur2xbps template <pkg>   # genera plantilla xbps-src"
 echo "   aur2xbps build <pkg>      # compila ($NIX_MODE)"
 echo "   vouru install <pkg>       # flujo vouru (usa las plantillas)"
-echo " Repo HTTP:  sv status aur2xbps-repo   (runit, puerto $PORT)"
+echo " Repo HTTP:  ~/.local/bin/aur2xbps-serve-repo &   (o servicio runit/dinit)"
 echo "════════════════════════════════════════════════════"
