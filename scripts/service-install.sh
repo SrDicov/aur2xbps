@@ -119,10 +119,10 @@ case "$INIT" in
     runit)
         if is_root && [ -d /etc/runit/runsvdir/default ]; then
             install_runit_system
-        elif [ -d /etc/runit ]; then
-            install_runit_user
         else
-            warn "runit no presente pese a PID1; sirve manualmente: scripts/serve-repo.py"
+            # forzado explícito (o PID1=runit): escribir dotfiles de usuario
+            # es inofensivo aunque runit aún no esté instalado
+            install_runit_user
         fi
         ;;
     dinit)

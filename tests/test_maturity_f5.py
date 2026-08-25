@@ -61,6 +61,9 @@ def test_sign_repo_pasa_por_run_con_timeout(monkeypatch):
 
     from src.xbps import builder
     monkeypatch.setattr(builder.subprocess, "run", fake_run)
+    # sign_repo resuelve XBPS_RINDEX() en la llamada: en runners sin
+    # xbps-tools eso lanza antes de tocar el mock de subprocess.run
+    monkeypatch.setattr(builder, "XBPS_RINDEX", lambda: "xbps-rindex")
     sg.sign_repo(Path("/repo"), Path("/claves/priv.pem"))
     assert seen["timeout"] == 300
     assert "--privkey" in seen["cmd"]

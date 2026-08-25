@@ -19,6 +19,9 @@ def _write_toml(path, content):
 def test_defaults_xdg(tmp_path, monkeypatch):
     monkeypatch.delenv("AUR2XBPS_DATA_DIR", raising=False)
     monkeypatch.delenv("AUR2XBPS_CONFIG", raising=False)
+    # aislamiento total: el CI exporta AUR2XBPS_ROOT a nivel de job y
+    # _apply_env SIEMPRE gana (contrato) — estos tests prueban defaults XDG
+    monkeypatch.delenv("AUR2XBPS_ROOT", raising=False)
     cfg = load_config(tmp_path / "no-existe.toml")
     assert cfg.data_dir.name == "aur2xbps"
     assert cfg.repo_dir == cfg.data_dir / "repo"
@@ -26,7 +29,7 @@ def test_defaults_xdg(tmp_path, monkeypatch):
     assert cfg.void_packages_dir == cfg.data_dir / "void" / "void-packages"
 
 
-def test_toml_user_overrides_defaults(tmp_path):
+def test_toml_user_overrides_defaults(tmp_path, monkeypatch):
     toml = tmp_path / "config.toml"
     _write_toml(toml, """
 [paths]
@@ -43,6 +46,10 @@ arch = "aarch64"
 log_level = "DEBUG"
 restricted_mode = false
 """)
+    # el TOML explícito define data_dir; sin aislamiento, AUR2XBPS_ROOT del
+    # job de CI lo pisaría (env > archivo por contrato)
+    monkeypatch.delenv("AUR2XBPS_ROOT", raising=False)
+    monkeypatch.delenv("AUR2XBPS_DATA_DIR", raising=False)
     cfg = load_config(toml)
     assert str(cfg.data_dir) == "/tmp/d1"
     assert cfg.repo_dir is None or True  # derivada después
