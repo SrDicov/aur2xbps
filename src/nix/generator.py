@@ -187,6 +187,13 @@ ARCH_TO_NIX = {
     "ttf-liberation": "liberation_ttf", "fontconfig": "fontconfig",
     "shared-mime-info": "shared-mime-info", "hicolor-icon-theme": "hicolor-icon-theme",
     "desktop-file-utils": "desktop-file-utils", "xdg-utils": "xdg-utils",
+    # C++/build comunes (attrs reales de nixpkgs con guión bajo)
+    "nlohmann-json": "nlohmann_json", "range-v3": "range-v3",
+    "gtest": "gtest", "argagg": "argagg",
+    # Qt5 attrs anidados + utilidades
+    "qt5-declarative": "qt5.qtdeclarative", "qt5-tools": "qt5.qttools",
+    "xxd": "unixtools.xxd", "fuse2": "fuse", "squashfuse": "squashfuse",
+    "libxpm": "libxpm",
     # utilidades CLI comunes en depends
     "git": "git", "gnupg": "gnupg", "lsof": "lsof", "which": "which",
     "libnotify": "libnotify", "libsecret": "libsecret",
@@ -416,6 +423,15 @@ DERIV_CMAKE = """
           }};
           nativeBuildInputs = with pkgs; [ cmake ninja file qt6.wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
+          preConfigure = ''
+            # el build system puede vivir en un subdirectorio del repo
+            # (patrón upstream común); configurar desde ahí
+            _bs=$(find . -maxdepth 3 -name CMakeLists.txt -not -path './build/*' | sort | head -n1)
+            if [ -n "$_bs" ] && [ "$(dirname "$_bs")" != "." ]; then
+              echo "aur2xbps: build system en subdirectorio: $(dirname "$_bs")"
+              cd "$(dirname "$_bs")"
+            fi
+          '';
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
             platforms = [ "{nix_system}" ];
@@ -446,6 +462,13 @@ DERIV_MESON = """
           '';
           nativeBuildInputs = with pkgs; [ meson ninja pkg-config file qt6.wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
+          preConfigure = ''
+            _bs=$(find . -maxdepth 3 -name meson.build -not -path './build/*' | sort | head -n1)
+            if [ -n "$_bs" ] && [ "$(dirname "$_bs")" != "." ]; then
+              echo "aur2xbps: build system en subdirectorio: $(dirname "$_bs")"
+              cd "$(dirname "$_bs")"
+            fi
+          '';
           meta = with pkgs.lib; {{
             description = "{pkgdesc}";
             platforms = [ "{nix_system}" ];
@@ -742,6 +765,15 @@ ECO_BODIES = {
           \'\';
 """,
     "cmake": """
+          preConfigure = ''
+            # el build system puede vivir en un subdirectorio del repo
+            # (patrón upstream común); configurar desde ahí
+            _bs=$(find . -maxdepth 3 -name CMakeLists.txt -not -path './build/*' | sort | head -n1)
+            if [ -n "$_bs" ] && [ "$(dirname "$_bs")" != "." ]; then
+              echo "aur2xbps: build system en subdirectorio: $(dirname "$_bs")"
+              cd "$(dirname "$_bs")"
+            fi
+          '';
           nativeBuildInputs = with pkgs; [ cmake ninja file qt6.wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
 """,
@@ -767,6 +799,13 @@ ECO_BODIES = {
           '';
           nativeBuildInputs = with pkgs; [ meson ninja pkg-config file qt6.wrapQtAppsHook {native_inputs} ];
           buildInputs = with pkgs; [ {build_inputs} ];
+          preConfigure = ''
+            _bs=$(find . -maxdepth 3 -name meson.build -not -path './build/*' | sort | head -n1)
+            if [ -n "$_bs" ] && [ "$(dirname "$_bs")" != "." ]; then
+              echo "aur2xbps: build system en subdirectorio: $(dirname "$_bs")"
+              cd "$(dirname "$_bs")"
+            fi
+          '';
 """,
     "python-legacy": """
           nativeBuildInputs = with pkgs; [
