@@ -434,6 +434,11 @@ def chroot_install(pkgname: str) -> bool:
                         f"--repository={REPO}", "-Sy", "-y", pkgname])
     r2 = _srun(["sh", "-c", f"yes | env {pairs} {inner}"],
                timeout=900)
+    if os.environ.get("CHROOT_DEBUG"):
+        # diagnóstico CI: transacción completa, no solo la cola
+        print(f"[chroot][debug] cmd: {inner}\n[chroot][debug] rc={r2.returncode}\n"
+              f"[chroot][debug] out:\n{r2.stdout}\n[chroot][debug] err:\n{r2.stderr}",
+              file=sys.stderr)
     if r2.returncode == 0 and "installed successfully" in (r2.stdout + r2.stderr):
         return True
     CHROOT_LAST_ERR = ((r2.stdout or "") + (r2.stderr or ""))[-600:]

@@ -24,6 +24,10 @@ jobs:
     timeout-minutes: 180
     env:
       AUR2XBPS_ROOT: /tmp/aur2xbps-workspace
+      # la clave se genera en $AUR2XBPS_ROOT/keys: alinear la config o el
+      # runner firmaría "sin privkey" (repo local sin firma → rechazado)
+      AUR2XBPS_KEYS_DIR: /tmp/aur2xbps-workspace/keys
+      CHROOT_DEBUG: "1"
     steps:
       - uses: actions/checkout@v4
         with:
