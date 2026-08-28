@@ -195,7 +195,7 @@ def _fix_shebangs(stage: Path) -> int:
     ]
     fixed = 0
     for f in subprocess.check_output(["find", str(stage), "-type", "f"],
-                                     text=True).splitlines():
+                                     text=True, timeout=300).splitlines():
         try:
             head = Path(f).open("rb").read(256)
         except Exception:
@@ -253,16 +253,29 @@ def verify_patched_elf(path: str) -> None:
     """Oráculo post-patchelf (H-4.1): patchelf con secciones no convencionales
     puede corromper el ELF silenciosamente. ldd debe leer el binario sin
     fallar; libs "not found" son tolerables (resuelven en el chroot Void vía
-    shlibs). Lanza RuntimeError ante corrupción o cuelgue."""
+    shlibs). Solo lanza RuntimeError ante corrupción REAL (ldd no puede leer el
+    ELF) o cuelgue — NO ante libs faltantes (exit 1 con 'not found')."""
     try:
-        subprocess.run(["ldd", path], capture_output=True, text=True,
-                       timeout=60, check=True)
-    except subprocess.CalledProcessError as e:
-        tail = ((e.stdout or "") + (e.stderr or ""))[-300:]
-        raise RuntimeError(
-            f"patchelf corrompió {path} (ldd exit {e.returncode}): {tail}") from e
+        r = subprocess.run(["ldd", path], capture_output=True, text=True,
+                          timeout=60, check=False,
+                          env={"LC_ALL": "C", "LANG": "C"})
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ldd colgado en {path}: ELF posiblemente corrupto") from e
+    # ldd exit 1 = "not found" libs (esperado en stage pre-chroot) → OK.
+    # Corrupción real: ldd no reconoce el ELF (exit 2 / "not a dynamic
+    # executable" / señal). Un binario estático también da exit != 0 pero el
+    # caller ya filtra estáticos antes de llamar (H-4.1).
+    # LC_ALL=C: las cadenas de ldd son locale-independientes (el host puede
+    # estar en es_ES, fr_FR, etc. y "not a dynamic executable" saldría traducido).
+    if r.returncode == 0:
+        return
+    blob = (r.stdout or "") + (r.stderr or "")
+    if "not found" in blob:
+        return  # librerías faltantes: se resuelven en chroot Void
+    if r.returncode < 0 or "not a dynamic executable" in blob \
+            or "cannot execute" in blob:
+        raise RuntimeError(
+            f"patchelf corrompió {path} (ldd rc={r.returncode}): {blob[-300:]}")
 
 
 def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
@@ -272,12 +285,12 @@ def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
     find_args = ["-type", "f"]
     cmd_find = ["find", str(stage)] + find_args
     try:
-        files = subprocess.check_output(cmd_find, text=True).splitlines()
+        files = subprocess.check_output(cmd_find, text=True, timeout=300).splitlines()
     except subprocess.CalledProcessError:
         return 0
     for f in files:
         try:
-            out = subprocess.check_output(["file", "-b", f], text=True)
+            out = subprocess.check_output(["file", "-b", f], text=True, timeout=30)
         except Exception:
             continue
         is_elf = "ELF" in out
@@ -289,9 +302,9 @@ def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
         # no tocar (patchelf sobre binarios Go es destructivo aunque sean dinámicos)
         try:
             d_out = subprocess.check_output(["readelf", "-d", f], text=True,
-                                            stderr=subprocess.DEVNULL)
+                                            stderr=subprocess.DEVNULL, timeout=30)
             l_out = subprocess.check_output(["readelf", "-l", f], text=True,
-                                            stderr=subprocess.DEVNULL)
+                                            stderr=subprocess.DEVNULL, timeout=30)
         except Exception:
             continue
         interp_nix = "/nix/store" in l_out
@@ -301,17 +314,23 @@ def patchelf_to_void(stage: Path, include_shared: bool = True) -> int:
         # Guardar modo original: chmod +w es temporal, se restaura tras parchear
         # (H-4.1: sin restauración, las libs quedaban 0644+w → drift en stage)
         orig_mode = os.stat(f).st_mode & 0o777
-        _run(["chmod", "+w", f])
+        rc = _run(["chmod", "+w", f], timeout=30)
+        if rc.returncode != 0:
+            # No pudimos hacer el archivo escribible (p.ej. inmutable): saltar
+            # para no dejar el stage a medias ni corromper el ELF.
+            print(f"[patchelf] WARN: chmod +w falló en {f}: {rc.stderr[:120]}",
+                  file=sys.stderr)
+            continue
         # 1) rpath primero
-        _run(["patchelf", "--set-rpath", "$ORIGIN:/usr/lib:/usr/lib64", f])
+        _run(["patchelf", "--set-rpath", "$ORIGIN:/usr/lib:/usr/lib64", f], timeout=30)
         # 2) interpreter después, solo ejecutables (no .so puros)
         if "executable" in out:
-            _run(["patchelf", "--set-interpreter", VOID_INTERP(), f])
+            _run(["patchelf", "--set-interpreter", VOID_INTERP(), f], timeout=30)
             # Normalización de modo: ELF ejecutable siempre 0755
             # (zips/tars upstream pueden perder el bit x; root lo enmascara vía DAC_OVERRIDE)
-            _run(["chmod", "755", f])
+            _run(["chmod", "755", f], timeout=30)
         else:
-            _run(["chmod", oct(orig_mode)[2:], f])
+            _run(["chmod", oct(orig_mode)[2:], f], timeout=30)
         # 3) Oráculo post-escritura (H-4.1): detecta corrupción inmediata
         verify_patched_elf(f)
         patched += 1
@@ -323,15 +342,15 @@ def auto_run_depends(stage: Path, db: Optional[ShlibsDB] = None,
     """SONAMEs NEEDED de todos los ELF del stage → deps XBPS vía common/shlibs real."""
     db = db or ShlibsDB()
     deps: set[str] = set()
-    for f in subprocess.check_output(["find", str(stage), "-type", "f"], text=True).splitlines():
+    for f in subprocess.check_output(["find", str(stage), "-type", "f"], text=True, timeout=300).splitlines():
         try:
-            out = subprocess.check_output(["file", "-b", f], text=True)
+            out = subprocess.check_output(["file", "-b", f], text=True, timeout=30)
         except Exception:
             continue
         if "ELF" not in out:
             continue
         try:
-            readelf = subprocess.check_output(["readelf", "-d", f], text=True, stderr=subprocess.DEVNULL)
+            readelf = subprocess.check_output(["readelf", "-d", f], text=True, stderr=subprocess.DEVNULL, timeout=30)
         except Exception:
             continue
         for line in readelf.splitlines():

@@ -231,18 +231,27 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
                     warnings.append(f"fuente VCS sin soporte tarball ({u}); añadir do_fetch manual")
             else:
                 urls.append(_void_distfile(raw))
-        # checksum alineado por índice; SKIP cuenta como ausente
-        checksums = [src_sums[i] for i in kept_idx
-                     if i < len(src_sums) and src_sums[i] != "SKIP"]
-        needs_hash = len(checksums) != len(urls)
+        # Alinear (url, checksum) por índice original; SKIP se conserva como
+        # marcador para preservar la correspondencia distfiles<->checksum que
+        # xbps-src exige 1:1. Sin esto, filtrar por baseline desalineaba los
+        # hashes de las fuentes que quedaban (bug de variantes de microarch).
+        aligned: list[tuple[str, str]] = []
+        for i, u in zip(kept_idx, urls):
+            c = src_sums[i] if i < len(src_sums) else "SKIP"
+            aligned.append((u, c))
+        checksums = [c for _, c in aligned]
+        needs_hash = any(c == "SKIP" for c in checksums)
         # Variantes de microarquitectura (-baseline vs moderna): quedarse SOLO
         # con las baseline — máxima compatibilidad de CPU. Instalar ambas sobre
-        # la misma ruta termina ejecutando la que exige AVX2 → SIGILL.
-        if any("-baseline" in u for u in urls) and len(checksums) == len(urls):
-            pairs = [(u, c) for u, c in zip(urls, checksums) if "-baseline" in u]
-            if 0 < len(pairs) < len(urls):
-                urls = [u for u, _ in pairs]
-                checksums = [c for _, c in pairs]
+        # la misma ruta termina ejecutando la que exige AVX2 → SIGILL. El filtro
+        # se hace sobre los pares alineados para no desalinear los checksums.
+        if any("-baseline" in u for u, _ in aligned):
+            base = [(u, c) for u, c in aligned if "-baseline" in u]
+            if 0 < len(base) < len(aligned):
+                aligned = base
+                urls = [u for u, _ in aligned]
+                checksums = [c for _, c in aligned]
+                needs_hash = any(c == "SKIP" for c in checksums)
                 warnings.append(
                     "variantes de microarch: se empaqueta solo -baseline "
                     "(compatibilidad CPU máxima)")
@@ -258,7 +267,7 @@ def generate_template(srcinfo: SrcInfo, out_dir: Path,
         restricted, reason = is_restricted(srcinfo)
         if restricted and cfg.restricted_mode:
             warnings.append(f"restringido ({reason}): NO distribuir el binario")
-        hash_source = "srcinfo" if checksums else None
+        hash_source = "srcinfo" if any(c != "SKIP" for c in checksums) else None
         if needs_hash and not cfg.offline:
             computed = _compute_hashes(urls)
             if computed:

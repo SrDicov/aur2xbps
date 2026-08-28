@@ -145,5 +145,33 @@ Helper bash que envuelve xbps-src en `~/.local/share/pkgs/void-packages` (config
 - Cross-compile ARM (boringssl-git) desde host x86_64 único: no soportado.
 - Repology API restringe bots: oráculo offline cubre caso básico sin nombres alternativos automáticos.
 
+## Auditoría 2026-08 (Fases 1–6)
+
+Auditoría integral de todo el repositorio ejecutada con 4 subagentes paralelos
+(`src/aur/`, `src/nix/`, `src/xbps/`+`src/void/`, `src/common/`+cli+scripts+CI+tests).
+Resultado: **5 críticos, 9 high, 15 medium**. Todos los críticos/high fueron
+corregidos y verificados (subagent por fix + `pytest`). Suite: 285 tests verde.
+
+### Fixes aplicados (P0/P1)
+| Bug | Archivo | Estado |
+|-----|---------|--------|
+| patchelf TOCTOU: `chmod +w` sin check + `verify_patched_elf` con `check=True` fallaba en libs "not found" | `src/xbps/pipeline.py:268-318` | ✅ `check=False` + distinción corrupción/"not found"; timeouts en `find/file/readelf/patchelf` |
+| `chown 0:0` silencioso (TRH roto si falla) | `src/xbps/builder.py:88-91` | ✅ helper `_chown_stage_root` con verificación post-chown (`find ! -uid 0 -o ! -gid 0`) |
+| Auto-fix hash multi-FOD contamina derivaciones | `src/nix/generator.py` | ✅ placeholders únicos por FOD (`_dummy_placeholder`/`_assign_unique_dummies`); `build_with_hash_fix` reemplaza por `specified:` exacto |
+| Fallback hardcode `/usr/local/xbps/usr/bin` | `src/common/tools.py:16`, `config.py`, `scripts/ci-local.sh` | ✅ eliminado; resolución vía `AUR2XBPS_XBPS_BIN_DIR`/`[paths] xbps_bin_dir`/PATH |
+| `MALICIOUS_EXACT` hardcodeado | `src/aur/security.py` | ✅ baseline inmutable `_MALICIOUS_BASE` + `[security] malicious_exact` (UNIÓN, no reemplaza) |
+| Alineación checksum variantes `-baseline` | `src/void/template.py:234-257` | ✅ pares (url,checksum) alineados con SKIP como marcador; filtro solo baseline preserva alineación |
+| `paths.py` cargaba config en import | `src/common/paths.py` | ✅ lazy vía `__getattr__` (PEP 562); `reset_lazy_cache()` para reloads |
+
+### Verificados como correctos (no requirieron cambio)
+- **musl early-block** (`src/aur/pipeline.py:72`): filtra `-bin` por nombre ANTES del clone; la detección por URL queda en el bloque profundo post-clone por diseño. No es bug.
+- **timeout XBPS_QUERY** (`src/xbps/pipeline.py:60`): ya tenía `timeout=60` + `except → fallback` al piso. Robusto.
+
+### Lecciones incorporadas a Gotchas
+- `verify_patched_elf`: `ldd` con libs "not found" (exit 1) es OK en stage pre-chroot; solo `not a dynamic executable`/señal = corrupción.
+- Auto-fix de hash Nix: SIEMPRE reemplazar por el `specified:` exacto del FOD que falló; placeholders idénticos en flakes multi-derivación contaminan derivaciones ya correctas.
+- `chown`/`touch` de stage: verificar el returncode; un fallo silencioso rompe TRH cross-host.
+- `paths.*` se resuelve perezosamente; tras `get_config(reload=True)` llamar `paths.reset_lazy_cache()`.
+
 ## Documentación externa
 - **DeepWiki** (MCP `deepwiki` en opencode): repo indexado como `SrDicov/aur2xbps`. Para arquitectura/pipeline usar `ask_question(repoName="SrDicov/aur2xbps", ...)` o `read_wiki_structure`; web: https://deepwiki.com/SrDicov/aur2xbps

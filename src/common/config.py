@@ -164,6 +164,7 @@ class Config:
     keys_dir: Path = field(default_factory=lambda: xdg_config_home() / "aur2xbps" / "keys")
     masterdir: Path = None           # default data_dir/void/masterdir
     void_packages_dir: Path = None   # default data_dir/void/void-packages
+    xbps_bin_dir: Path | None = None  # dir de xbps static (AUR2XBPS_XBPS_BIN_DIR / [paths] xbps_bin_dir)
     nix_store_dir: Path = Path("/nix")
     # [repo]
     host: str = "127.0.0.1"
@@ -186,6 +187,10 @@ class Config:
     # intersección con validpgpkeys del .SRCINFO habilita exenciones del
     # filtro JS con cadena de custodia real.
     trusted_pgp_keys: List[str] = field(default_factory=list)
+    # [security] paquetes maliciosos exactos (Atomic Arch). Se UNE al baseline
+    # inmutable de src/aur/security.py — la config SOLO extiende, no reemplaza,
+    # para no perder protecciones críticas por un TOML incompleto.
+    malicious_exact: List[str] = field(default_factory=list)
     # [priv] command: elevador de privilegios forzado (misma semántica que
     # AUR2XBPS_PRIV, p.ej. "doas -u root"); vacío → autodetección priv.py
     priv_command: str = ""
@@ -311,13 +316,14 @@ def _apply_env(cfg: Config) -> None:
         "AUR2XBPS_MASTERDIR": "masterdir",
         "AUR2XBPS_VOID_DIR": "void_packages_dir",
         "AUR2XBPS_NIX_STORE": "nix_store_dir",
+        "AUR2XBPS_XBPS_BIN_DIR": "xbps_bin_dir",
         "AUR2XBPS_HOST": "host",
         "AUR2XBPS_PORT": "port",
         "AUR2XBPS_ARCH": "arch",
         "AUR2XBPS_LIBC": "libc",
     }
     path_fields = {"data_dir", "cache_dir", "repo_dir", "keys_dir", "masterdir",
-                   "void_packages_dir", "nix_store_dir"}
+                   "void_packages_dir", "nix_store_dir", "xbps_bin_dir"}
     for env, attr in env_map.items():
         val = os.environ.get(env)
         if not val:

@@ -11,13 +11,22 @@ import re
 from typing import List, Set
 from src.common.types import SrcInfo
 
-# Paquetes maliciosos exactos reportados (jun 2026+ Atomic Arch)
-MALICIOUS_EXACT: Set[str] = {
+# Baseline inmutable de paquetes maliciosos exactos (Atomic Arch). NO editar
+# aquí para añadir nuevos: extiéndelo vía [security] malicious_exact en
+# config.toml (ver src/common/config.py). La unión de ambos es lo que filtra.
+_MALICIOUS_BASE: Set[str] = {
     "atomic-lockfile",
     "js-digest",
     "lockfile-js",
     # variantes vistas en iteraciones: normalizar sin versión
 }
+
+
+def malicious_set() -> Set[str]:
+    """Conjunto efectivo de paquetes maliciosos: baseline + config extensible."""
+    from src.common.config import get_config
+    cfg = get_config().malicious_exact or []
+    return set(_MALICIOUS_BASE) | {m.strip().lower() for m in cfg if m.strip()}
 
 # Allowlist JS legítimo — proyectos que legit usan npm/bun pero son -bin o requieren build
 # Por spec: visual-studio-code-bin es -bin pero no compila JS → debe pasar
@@ -56,22 +65,23 @@ def _extract_dep_names(deps: List[str]) -> Set[str]:
     return names
 
 def is_malicious_package(pkgname: str) -> bool:
-    return pkgname.lower() in MALICIOUS_EXACT
+    return pkgname.lower() in malicious_set()
 
 def contains_malicious_dep(srcinfo: SrcInfo) -> List[str]:
     hits = []
+    mal = malicious_set()
     # 1) El paquete EN SÍ es uno de los maliciosos exactos
-    if srcinfo.pkgbase.lower() in MALICIOUS_EXACT:
+    if srcinfo.pkgbase.lower() in mal:
         hits.append(f"{srcinfo.pkgbase}: paquete malicioso exacto (Atomic Arch)")
     for pname, pkg in srcinfo.packages.items():
-        if pname.lower() in MALICIOUS_EXACT:
+        if pname.lower() in mal:
             hits.append(f"{pname}: paquete malicioso exacto (Atomic Arch)")
             continue
         # 2) Depende de un malicioso exacto
         deps = set(_extract_dep_names(pkg.depends_for() + pkg.makedepends_for()))
-        for mal in MALICIOUS_EXACT:
-            if mal in deps:
-                hits.append(f"{pname}: depende de paquete malicioso exacto '{mal}'")
+        for m in mal:
+            if m in deps:
+                hits.append(f"{pname}: depende de paquete malicioso exacto '{m}'")
     return hits
 
 def is_js_legitimate(pkgbase: str, srcinfo: SrcInfo | None = None) -> bool:

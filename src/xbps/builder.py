@@ -57,6 +57,29 @@ def _run(cmd: List[str], env: dict | None = None, timeout: int = 600,
             e.cmd = redact_cmd(e.cmd)
         raise
 
+
+def _chown_stage_root(stage_dir: Path) -> None:
+    """Normaliza owner a 0:0 (requerido para TRH determinista cross-host).
+
+    Intenta sin elevador y reintenta vía ``priv_wrap`` si falla. TRAS ambos
+    intentos VERIFICA que realmente todos los archivos quedaron en uid/gid 0;
+    de lo contrario lanza RuntimeError (no continuar en silencio: un chown
+    fallido rompe la reproducibilidad del .xbps, H-3.1)."""
+    stage_dir = Path(stage_dir)
+    chown_cmd = ["find", str(stage_dir), "-exec", "chown", "-h", "0:0", "{}", ";"]
+    ret = subprocess.run(chown_cmd, capture_output=True, text=True)
+    if ret.returncode != 0:
+        ret = subprocess.run(priv_wrap(chown_cmd), capture_output=True, text=True)
+    # Verificación: ¿quedó algún archivo que NO sea uid 0 / gid 0?
+    probe = subprocess.run(
+        ["find", str(stage_dir), "(", "!", "-uid", "0", "-o", "!", "-gid", "0", ")",
+         "-print", "-quit"],
+        capture_output=True, text=True)
+    if probe.stdout.strip():
+        raise RuntimeError(
+            f"chown 0:0 falló en stage {stage_dir}: archivos sin normalizar "
+            f"(uid/gid != 0). Revisa privilegios/elevador. stdout={probe.stdout[:200]}")
+
 def create_xbps(
     stage_dir: Path,
     out_path: Path,
@@ -86,10 +109,7 @@ def create_xbps(
     # Orden mandatorio: touch -> chown -> sort. chown 0:0 requiere root:
     # intentar sin elevador y reintentar vía priv_wrap (sudo/doas/…)
     subprocess.run(["find", str(stage_dir), "-exec", "touch", "-h", "-d", "@0", "{}", ";"], check=False)
-    ret = subprocess.run(["find", str(stage_dir), "-exec", "chown", "-h", "0:0", "{}", ";"], capture_output=True)
-    if ret.returncode != 0:
-        subprocess.run(priv_wrap(["find", str(stage_dir), "-exec", "chown", "-h", "0:0", "{}", ";"]), check=False)
-    # Verificación: todos los archivos con mtime 0 y uid 0 (debug opcional)
+    _chown_stage_root(stage_dir)
     # xbps-create usa libarchive con SOURCE_DATE_EPOCH; el chown asegura numeric-owner determinista
 
     cmd = [
@@ -241,9 +261,7 @@ def stage_from_nix_result(nix_result: Path, stage: Path):
                     _shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
     # Normalizar mtime + owner para TRH (ver test TRH 2026-08-21: requiere chown 0:0 + touch)
     subprocess.run(["find", str(stage), "-exec", "touch", "-h", "-d", "@0", "{}", ";"], check=False)
-    ret = subprocess.run(["find", str(stage), "-exec", "chown", "-h", "0:0", "{}", ";"], capture_output=True)
-    if ret.returncode != 0:
-        subprocess.run(priv_wrap(["find", str(stage), "-exec", "chown", "-h", "0:0", "{}", ";"]), check=False)
+    _chown_stage_root(stage)
     # Patchelf EEL se aplica antes de stage si viene de nix_result ya parcheado a Void; aquí solo normaliza
 
 if __name__ == "__main__":
