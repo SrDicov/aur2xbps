@@ -47,3 +47,47 @@ def test_mapas_nuevos_presentes():
     from src.nix.generator import ARCH_TO_NIX
     assert ARCH_TO_NIX.get("boost-libs") == "boost"
     assert ARCH_TO_NIX.get("gconf") == "gnome2.GConf"
+
+
+def test_hashfix_multi_fod_replaces_exact_specified(tmp_path, monkeypatch):
+    """H-3.2: en flakes multi-FOD con placeholders distintos, el hash reportado
+    por Nix debe corregir SOLO la derivación fallida, sin contagiar las demás."""
+    from src.nix import generator
+
+    p1 = "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    p2 = "sha256-CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    flake = tmp_path / "flake.nix"
+    flake.write_text(
+        'pkgA = fetchurl { sha256 = "' + p1 + '"; };\n'
+        'pkgB = fetchurl { sha256 = "' + p2 + '"; };\n'
+    )
+    error = ("hash mismatch in fixed-output derivation ...\n"
+             "  specified: " + p2 + "\n"
+             "  got:      sha256-REALBREALBREALBREALBREALBREALBREALB=\n")
+
+    class FakeRes:
+        returncode = 1
+        stdout = ""
+        stderr = error
+
+    def fake_run(cmd, **kw):
+        return FakeRes()
+
+    monkeypatch.setattr(generator.subprocess, "run", fake_run)
+    ok, msg = generator.build_with_hash_fix(
+        tmp_path, "pkgA", max_retries=1, timeout=10)
+    txt = flake.read_text()
+    # La derivación que falló (p2) se corrige con el hash real
+    assert "sha256-REALBREALBREALBREALBREALBREALBREALB=" in txt
+    assert p2 not in txt
+    # La otra derivación (p1) NO se contamina con el hash ajeno
+    assert p1 in txt, "p1 fue contaminado por el hash de p2"
+
+
+def test_assign_unique_dummies_makes_placeholders_distinct():
+    from src.nix import generator
+    sample = "a = " + generator.HASH_DUMMY + "; b = " + generator.HASH_DUMMY
+    out = generator._assign_unique_dummies(sample)
+    parts = out.split("; ")
+    assert len(set(parts)) == 2
+    assert generator.HASH_DUMMY not in out

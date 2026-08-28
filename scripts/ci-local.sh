@@ -18,7 +18,12 @@ if [ "$(id -u)" != "0" ]; then
     [ -n "$PRIV" ] || { echo "[CI] sin root ni elevador (sudo/doas/run0): exporta AUR2XBPS_PRIV" >&2; exit 1; }
   fi
 fi
-XBPS_CREATE_BIN="$(command -v xbps-create || echo /usr/local/xbps/usr/bin/xbps-create)"
+# Resolución de binarios xbps sin rutas hardcodeadas (AGENTS.md):
+# PATH del sistema > $AUR2XBPS_XBPS_BIN_DIR; si no hay ninguno, vacío (el
+# paso que lo use falla con mensaje claro en vez de ruta inventada).
+xb() { command -v "$1" 2>/dev/null || { [ -n "${AUR2XBPS_XBPS_BIN_DIR:-}" ] && echo "${AUR2XBPS_XBPS_BIN_DIR}/$1"; }; }
+XBPS_CREATE_BIN="$(xb xbps-create)"
+[ -n "$XBPS_CREATE_BIN" ] || echo "[CI] ⚠️  xbps-create no encontrado en PATH ni AUR2XBPS_XBPS_BIN_DIR" >&2
 TRH_STAGE_HELLO="${TRH_STAGE_HELLO:-hello}"
 TRH_STAGE_REAL="${TRH_STAGE_REAL:-}"   # paquete real opcional para TRH determinize
 WORKSPACE="${AUR2XBPS_ROOT:-$(cat ~/.config/aur2xbps/root 2>/dev/null || echo "$HOME/.local/share/aur2xbps")}"
@@ -171,7 +176,8 @@ if [ -z "${SMOKE_TARGET:-}" ]; then
   echo "[CI] ⚠️  SMOKE_TARGET sin definir: smoke chroot OMITIDO"
 else
 step "Smoke EEL en chroot Void ($SMOKE_TARGET)"
-XBPS_INSTALL_BIN="$(command -v xbps-install || echo /usr/local/xbps/usr/bin/xbps-install)"
+XBPS_INSTALL_BIN="$(xb xbps-install)"
+[ -n "$XBPS_INSTALL_BIN" ] || XBPS_INSTALL_BIN="xbps-install"
 "$XBPS_INSTALL_BIN" -r "$MASTERDIR" --repository="$REPO" -y "$SMOKE_TARGET" >/dev/null 2>&1 \
   && pass "instalación $SMOKE_TARGET" || fail "instalación $SMOKE_TARGET"
 SMOKE_BIN="${SMOKE_BIN:-$(echo "$SMOKE_TARGET" | sed 's/-bin$//')}"
@@ -217,7 +223,8 @@ fi
   "$PRIV" mknod -m 666 "$MASTERDIR/dev/null" c 1 3 2>/dev/null || true
 NOROOT_PKG="${NOROOT_SMOKE_PKG:-${SMOKE_TARGET:-}}"
 NOROOT_BIN="${NOROOT_SMOKE_BIN:-$(echo "$NOROOT_PKG" | sed 's/-git$//;s/-bin$//' )}"
-XBPS_QUERY_BIN="$(command -v xbps-query || echo /usr/local/xbps/usr/bin/xbps-query)"
+XBPS_QUERY_BIN="$(xb xbps-query)"
+[ -n "$XBPS_QUERY_BIN" ] || XBPS_QUERY_BIN="xbps-query"
 if [ -n "$NOROOT_PKG" ] && [ "${NOROOT_SMOKE_ENABLED:-1}" = "1" ] &&
    ls "$REPO"/"$NOROOT_PKG"-*.xbps >/dev/null 2>&1; then
   INSTALLED=$("$XBPS_QUERY_BIN" -r "$MASTERDIR" -l 2>/dev/null | grep -c "$NOROOT_PKG" || true)

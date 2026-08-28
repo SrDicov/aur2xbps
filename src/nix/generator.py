@@ -697,6 +697,35 @@ SUPPORTED_ECOSYSTEMS = set(ECOSYSTEM_TEMPLATES) | {"python-pep517"}
 # y vendorHash/cargoVendorHash de FODs).
 HASH_DUMMY = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
+
+def _dummy_placeholder(i: int) -> str:
+    """Placeholder de hash único y válido (formato ``sha256``) por índice ``i``.
+
+    Deriva de HASH_DUMMY variando UNA posición, de modo que Nix lo acepta como
+    hash fijo y reporta el real en ``specified:`` → build_with_hash_fix reemplaza
+    el EXACTO (no el primer hueco), corrigiendo flakes multi-FOD donde cada
+    derivación tiene un hash real distinto (split packages / vendor+npm)."""
+    alphabet = "BCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    body = list("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")  # 43 A's
+    body[i % 43] = alphabet[(i // 43) % len(alphabet)]
+    return "sha256-" + "".join(body) + "="
+
+
+def _assign_unique_dummies(content: str) -> str:
+    """Reemplaza cada ocurrencia de HASH_DUMMY por un placeholder único.
+
+    Permite a build_with_hash_fix mapear el ``specified:`` del error de Nix a la
+    derivación exacta que falló, sin contagiar las demás (H-3.2)."""
+    i = 0
+
+    def _repl(_m):
+        nonlocal i
+        p = _dummy_placeholder(i)
+        i += 1
+        return p
+
+    return re.sub(re.escape(HASH_DUMMY), _repl, content)
+
 # Guard universal anti-paquete-fantasma: si el Makefile del upstream instala
 # en silencio a /usr (que en sandbox falla o no-op), el $out queda VACÍO y el
 # pipeline empaqueta un .xbps sin ficheros. Esta fase garantiza binarios en
@@ -992,6 +1021,9 @@ def generate_flake(srcinfo: SrcInfo, out_dir: Path,
     # renombres dentro del namespace python3Packages (attrs históricos)
     flake = re.sub(r"python3Packages\.dbus\b(?!-)",
                    "python3Packages.dbus-python", flake)
+    # Cada placeholder de hash queda único → build_with_hash_fix corrige el FOD
+    # exacto que Nix reporta (evita contagiar derivaciones con distinto hash).
+    flake = _assign_unique_dummies(flake)
     flake_path = out_dir / "flake.nix"
     flake_path.write_text(flake)
     return flake_path
@@ -1128,27 +1160,26 @@ def build_with_hash_fix(out_dir: Path, attr: str, max_retries: int = 5,
             return False, (combined[-2000:] or "error desconocido")
         got = m.group(1)
         content = flake.read_text()
-        # (a) placeholder canónico (fetchgit/fetchurl/vendorHash de cargo/go):
-        #     sustituir SOLO la primera ocurrencia por intento. Nix reporta un
-        #     FOD fallido a la vez; un replace global estamparía el hash del
-        #     primer FOD en TODOS los placeholders de flakes multi-derivación
-        #     (split packages), contaminando derivaciones ya correctas.
-        if HASH_DUMMY in content:
+        # Reemplazo EXACTO por 'specified:' (preferido, H-3.2): Nix reporta el
+        # placeholder fallido; con placeholders únicos por FOD mapea 1:1 a la
+        # derivación correcta, sin contagiar las demás (multi-FOD / split packages
+        # con hashes distintos). Aplica tanto a dummies únicos como a hashes reales
+        # ya especificados que difieren del calculado.
+        sg = SPECIFIED_GOT_RE.search(combined)
+        if sg and sg.group(1) in content:
+            content_new = content.replace(sg.group(1), sg.group(2), 1)
+            got = sg.group(2)
+        elif HASH_DUMMY in content:
+            # (a) placeholder canónico legado (sin unique pass): primer hueco.
+            #     Nix reporta un FOD a la vez; count=1 evita contagiar los demás.
             content_new = content.replace(HASH_DUMMY, got, 1)
         else:
-            # (b) hash especificado ≠ real: primera ocurrencia del especificado
-            #     (mismo argumento anti-contagio que en (a))
-            sg = SPECIFIED_GOT_RE.search(combined)
-            if sg and sg.group(1) in content:
-                content_new = content.replace(sg.group(1), sg.group(2), 1)
-                got = sg.group(2)
-            else:
-                # (c) legado: un solo fetchurl → reescribir su hash
-                n_fetch = content.count("pkgs.fetchurl")
-                if n_fetch != 1:
-                    return False, f"multi-fetchurl ({n_fetch}): parche manual"
-                pat = r'(sha256|sha512|hash) = "[A-Za-z0-9+/=-]+"'
-                content_new = re.sub(pat, f'sha256 = "{got}"', content, count=1)
+            # (c) legado: un solo fetchurl con hash literal → reescribir su hash
+            n_fetch = content.count("pkgs.fetchurl")
+            if n_fetch != 1:
+                return False, f"multi-fetchurl ({n_fetch}): parche manual"
+            pat = r'(sha256|sha512|hash) = "[A-Za-z0-9+/=-]+"'
+            content_new = re.sub(pat, f'sha256 = "{got}"', content, count=1)
         if content_new == content:
             return False, f"no se pudo parchear hash {got}"
         flake.write_text(content_new)

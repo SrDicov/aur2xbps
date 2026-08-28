@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from src.aur.parser import parse_srcinfo
-from src.aur.security import check_atomic_arch, MALICIOUS_EXACT
+from src.aur.security import check_atomic_arch, _MALICIOUS_BASE
 
 def test_malicious_exact_block():
     txt = """

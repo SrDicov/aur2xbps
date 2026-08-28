@@ -180,6 +180,61 @@ def test_template_bin_fetch_style(tmp_path):
     assert "gnu-makefile" not in text
 
 
+def test_template_baseline_variant_keeps_alignment(tmp_path):
+    """Variantes -baseline vs moderna: solo queda baseline y checksum alineado."""
+    import re
+    from src.aur.parser import parse_srcinfo
+    from src.void.template import generate_template
+    src = """
+pkgbase = avx-pkg
+    pkgver = 1.0
+    pkgrel = 1
+    pkgdesc = avx test
+    license = ("MIT")
+    arch = ("x86_64")
+    source_x86_64 = ("https://example.com/app-baseline-1.0.tar.gz" "https://example.com/app-modern-1.0.tar.gz")
+    sha256sums_x86_64 = ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+pkgname = avx-pkg
+"""
+    si = parse_srcinfo(src)
+    text = generate_template(si, tmp_path)[0].template_path.read_text()
+    # Solo la variante -baseline debe quedar
+    assert "app-baseline-1.0.tar.gz" in text
+    assert "app-modern-1.0.tar.gz" not in text
+    dist = re.search(r'distfiles="([^"]*)"', text).group(1)
+    chk = re.search(r'checksum="([^"]*)"', text).group(1)
+    assert len(dist.split()) == len(chk.split()) == 1, (dist, chk)
+    # el checksum debe ser el de baseline (aaaa...), NO el de modern (bbbb...)
+    assert "aaaaaaaa" in chk
+    assert "bbbbbbbb" not in chk
+
+
+def test_template_baseline_with_skip_stays_aligned(tmp_path):
+    """Con SKIP en una variante, la alineación distfiles<->checksum se conserva."""
+    import re
+    from src.aur.parser import parse_srcinfo
+    from src.void.template import generate_template
+    src = """
+pkgbase = avx-pkg2
+    pkgver = 1.0
+    pkgrel = 1
+    pkgdesc = avx
+    license = ("MIT")
+    arch = ("x86_64")
+    source_x86_64 = ("https://example.com/app-baseline-1.0.tar.gz" "https://example.com/app-modern-1.0.tar.gz")
+    sha256sums_x86_64 = ("SKIP" "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+pkgname = avx-pkg2
+"""
+    si = parse_srcinfo(src)
+    text = generate_template(si, tmp_path)[0].template_path.read_text()
+    assert "app-baseline-1.0.tar.gz" in text
+    assert "app-modern-1.0.tar.gz" not in text
+    dist = re.search(r'distfiles="([^"]*)"', text).group(1)
+    chk = re.search(r'checksum="([^"]*)"', text).group(1)
+    # Invariante: misma cantidad de distfiles que de checksums
+    assert len(dist.split()) == len(chk.split()), (dist, chk)
+
+
 # ------------------------------------------------------------------ CLI
 
 def test_cli_query_json_structure(tmp_path, monkeypatch):
